@@ -6,7 +6,9 @@
 use proc_macro::{Delimiter, Group, Ident, Span, TokenStream, TokenTree};
 
 fn compile_error(msg: &str) -> TokenStream {
-    format!("compile_error!({msg:?});").parse().expect("compile_error tokens")
+    format!("compile_error!({msg:?});")
+        .parse()
+        .expect("compile_error tokens")
 }
 
 fn expand(args: TokenStream, item: TokenStream) -> Result<TokenStream, String> {
@@ -37,7 +39,9 @@ fn expand(args: TokenStream, item: TokenStream) -> Result<TokenStream, String> {
         .collect();
     let mut body: TokenStream = "use super::*;".parse().expect("use tokens");
     body.extend(renamed);
-    let mut out: TokenStream = format!("mod {name}").parse().map_err(|_| "bad fn name".to_string())?;
+    let mut out: TokenStream = format!("mod {name}")
+        .parse()
+        .map_err(|_| "bad fn name".to_string())?;
     out.extend([TokenTree::Group(Group::new(Delimiter::Brace, body))]);
     Ok(out)
 }

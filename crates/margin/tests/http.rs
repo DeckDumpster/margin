@@ -1,0 +1,482 @@
+//! The server in-process (no binary spawned) over a temporary database.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use axum::Router;
+use axum::body::Body;
+use axum::http::{Method, Request, StatusCode};
+use http_body_util::BodyExt;
+use margin::agents::hash_token;
+use margin::api::{AppState, router};
+use margin::config::{Config, ConfigError};
+use margin::db::Db;
+use margin::highlight::Highlighter;
+use margin::metrics::Metrics;
+use margin_core::{Clock, Rng};
+use margin_test_id::test_id;
+use serde_json::{Value, json};
+use tower::ServiceExt;
+
+const FIXTURE: &str = include_str!("../../margin-ui/fixtures/long.rs");
+const TOKEN: &str = "test-token-0123456789";
+
+struct FixedClock(i64);
+impl Clock for FixedClock {
+    fn now_unix(&self) -> i64 {
+        self.0
+    }
+}
+
+/// Deterministic randomness: a counter spread over the bytes asked for.
+struct CountingRng(AtomicU64);
+impl Rng for CountingRng {
+    fn fill(&self, buf: &mut [u8]) {
+        let n = self.0.fetch_add(1, Ordering::SeqCst);
+        for (i, b) in buf.iter_mut().enumerate() {
+            *b = (n >> ((i % 8) * 8)) as u8 ^ (i as u8).wrapping_mul(31);
+        }
+    }
+}
+
+struct Harness {
+    app: Router,
+    _dir: tempfile::TempDir,
+}
+
+fn harness() -> Harness {
+    let dir = tempfile::tempdir().unwrap();
+    let agents = dir.path().join("agents.toml");
+    std::fs::write(&agents, format!("tester = \"{}\"\n", hash_token(TOKEN))).unwrap();
+    let config = Config::parse(&format!(
+        "listen = \"127.0.0.1:0\"\nbase_url = \"http://margin.test:7340/\"\ndatabase = \"{}\"\nagents_file = \"{}\"\notlp_endpoint = \"http://127.0.0.1:1/v1/metrics\"\n",
+        dir.path().join("m.db").display(),
+        agents.display()
+    ))
+    .unwrap();
+    let state = AppState {
+        db: Db::open(&config.database).unwrap(),
+        config: Arc::new(config),
+        clock: Arc::new(FixedClock(1_700_000_000)),
+        rng: Arc::new(CountingRng(AtomicU64::new(1))),
+        metrics: Metrics::detached(),
+        highlighter: Arc::new(Highlighter::new()),
+    };
+    Harness {
+        app: router(state),
+        _dir: dir,
+    }
+}
+
+async fn send(
+    app: &Router,
+    method: Method,
+    uri: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> (StatusCode, String) {
+    let mut req = Request::builder().method(method).uri(uri);
+    if let Some(t) = token {
+        req = req.header("authorization", format!("Bearer {t}"));
+    }
+    let req = match body {
+        Some(b) => req
+            .header("content-type", "application/json")
+            .body(Body::from(b.to_string()))
+            .unwrap(),
+        None => req.body(Body::empty()).unwrap(),
+    };
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+fn doc(path: &str, text: &str) -> Value {
+    json!({"path": path, "kind": "code", "text": text})
+}
+
+async fn post(app: &Router, title: &str, docs: Vec<Value>) -> Value {
+    let (status, body) = send(
+        app,
+        Method::POST,
+        "/api/collections",
+        Some(TOKEN),
+        Some(json!({"title": title, "cover_note": "read me first", "documents": docs})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    serde_json::from_str(&body).unwrap()
+}
+
+/// (line number, visible text of the code cell) for each `data-line` element, in page order.
+fn page_lines(html: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    for chunk in html.split("data-line=\"").skip(1) {
+        let n: usize = chunk[..chunk.find('"').unwrap()].parse().unwrap();
+        let code = chunk.split("<span class=\"code\">").nth(1).unwrap();
+        let code = code.split("</span></div>").next().unwrap();
+        let mut text = String::new();
+        let mut in_tag = false;
+        for c in code.chars() {
+            match c {
+                '<' => in_tag = true,
+                '>' => in_tag = false,
+                c if !in_tag => text.push(c),
+                _ => {}
+            }
+        }
+        let text = text
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&amp;", "&");
+        out.push((n, text));
+    }
+    out
+}
+
+#[test_id(tzuvko0)]
+#[tokio::test]
+async fn the_fixture_page_shows_every_line_once_in_order() {
+    let h = harness();
+    let created = post(&h.app, "fixture", vec![doc("long.rs", FIXTURE)]).await;
+    assert_eq!(
+        created["url"],
+        format!(
+            "http://margin.test:7340/c/{}",
+            created["id"].as_str().unwrap()
+        )
+    );
+    let (status, html) = send(
+        &h.app,
+        Method::GET,
+        &format!("/c/{}", created["id"].as_str().unwrap()),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let lines = page_lines(&html);
+    let want: Vec<&str> = margin_core::lines::split(FIXTURE);
+    assert_eq!(want.len(), 3000);
+    assert_eq!(lines.len(), 3000);
+    for (i, ((n, text), want)) in lines.iter().zip(&want).enumerate() {
+        assert_eq!(*n, i + 1);
+        assert_eq!(text, want, "line {n}");
+    }
+    assert_eq!(html.matches("data-line=").count(), 3000);
+}
+
+#[test_id(t9nj3bj)]
+#[tokio::test]
+async fn a_rust_document_carries_syntect_classes_and_multiline_spans_stay_balanced() {
+    let h = harness();
+    let created = post(
+        &h.app,
+        "rs",
+        vec![doc(
+            "a.rs",
+            "/* one\n   two */\nfn main() { let x = \"s\"; }\n",
+        )],
+    )
+    .await;
+    let (_, html) = send(
+        &h.app,
+        Method::GET,
+        &format!("/c/{}", created["id"].as_str().unwrap()),
+        None,
+        None,
+    )
+    .await;
+    assert!(html.contains("class=\"keyword"), "{html}");
+    assert!(html.contains("class=\"comment"), "{html}");
+    assert!(html.contains("class=\"string"), "{html}");
+    let body = html.split("<div class=\"lines\"").nth(1).unwrap();
+    assert_eq!(
+        body.matches("<span").count(),
+        body.matches("</span>").count()
+    );
+}
+
+#[test_id(t0ogysl)]
+#[tokio::test]
+async fn prose_is_shown_as_its_markdown_source() {
+    let h = harness();
+    let (_, body) = send(
+        &h.app,
+        Method::POST,
+        "/api/collections",
+        Some(TOKEN),
+        Some(json!({"title": "d", "cover_note": "", "documents": [{"path": "d.md", "kind": "prose", "text": "# Head <b>\n\n* item\n"}]})),
+    )
+    .await;
+    let id = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, html) = send(&h.app, Method::GET, &format!("/c/{id}"), None, None).await;
+    let lines = page_lines(&html);
+    assert_eq!(
+        lines,
+        [
+            (1, "# Head <b>".to_string()),
+            (2, String::new()),
+            (3, "* item".to_string())
+        ]
+    );
+    assert!(!html.contains("<b>"), "prose is escaped, never rendered");
+}
+
+#[test_id(t3hmmb3)]
+#[tokio::test]
+async fn collections_support_create_read_update_delete_and_list() {
+    let h = harness();
+    let created = post(
+        &h.app,
+        "first",
+        vec![doc("a.rs", "fn a() {}\n"), doc("b.rs", "fn b() {}\n")],
+    )
+    .await;
+    let id = created["id"].as_str().unwrap();
+
+    let (status, body) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{id}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let got: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(got["title"], "first");
+    assert_eq!(got["state"], "open");
+    assert_eq!(got["created_by"], "tester");
+    assert_eq!(got["documents"][0]["path"], "a.rs");
+    assert_eq!(got["documents"][1]["path"], "b.rs");
+    assert_eq!(got["documents"][1]["version"], 1);
+
+    let (status, body) = send(
+        &h.app,
+        Method::PATCH,
+        &format!("/api/collections/{id}"),
+        Some(TOKEN),
+        Some(json!({"title": "renamed", "state": "published"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let patched: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        (patched["title"].as_str(), patched["state"].as_str()),
+        (Some("renamed"), Some("published"))
+    );
+    assert_eq!(patched["cover_note"], "read me first");
+
+    let (_, body) = send(&h.app, Method::GET, "/api/collections", None, None).await;
+    let listed: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(listed["items"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["items"][0]["title"], "renamed");
+
+    let (status, _) = send(
+        &h.app,
+        Method::DELETE,
+        &format!("/api/collections/{id}"),
+        Some(TOKEN),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{id}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = send(
+        &h.app,
+        Method::DELETE,
+        &format!("/api/collections/{id}"),
+        Some(TOKEN),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = send(&h.app, Method::GET, &format!("/c/{id}"), None, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[test_id(t5hs72h)]
+#[tokio::test]
+async fn the_list_paginates_by_cursor_without_repeats() {
+    let h = harness();
+    let mut made = Vec::new();
+    for i in 0..5 {
+        made.push(
+            post(&h.app, &format!("c{i}"), vec![doc("a.rs", "x\n")]).await["id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+    }
+    let mut seen = Vec::new();
+    let mut after = String::new();
+    let mut pages = 0;
+    loop {
+        let uri = if after.is_empty() {
+            "/api/collections?limit=2".to_string()
+        } else {
+            format!("/api/collections?limit=2&after={after}")
+        };
+        let (status, body) = send(&h.app, Method::GET, &uri, None, None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let page: Value = serde_json::from_str(&body).unwrap();
+        pages += 1;
+        for item in page["items"].as_array().unwrap() {
+            seen.push(item["id"].as_str().unwrap().to_string());
+        }
+        match page["next"].as_str() {
+            Some(c) => after = c.to_string(),
+            None => break,
+        }
+    }
+    assert_eq!(pages, 3);
+    let mut sorted = seen.clone();
+    sorted.sort();
+    sorted.dedup();
+    let mut want = made.clone();
+    want.sort();
+    assert_eq!(sorted, want);
+    assert_eq!(seen.len(), 5);
+}
+
+#[test_id(tmztohy)]
+#[tokio::test]
+async fn writes_without_a_valid_token_get_401() {
+    let h = harness();
+    let created = post(&h.app, "t", vec![doc("a.rs", "x\n")]).await;
+    let id = created["id"].as_str().unwrap();
+    let body = json!({"title": "t", "cover_note": "", "documents": [doc("a.rs", "x")]});
+    for token in [None, Some("wrong"), Some("")] {
+        let (s, _) = send(
+            &h.app,
+            Method::POST,
+            "/api/collections",
+            token,
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "POST with {token:?}");
+        let (s, _) = send(
+            &h.app,
+            Method::PATCH,
+            &format!("/api/collections/{id}"),
+            token,
+            Some(json!({"title": "x"})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "PATCH with {token:?}");
+        let (s, _) = send(
+            &h.app,
+            Method::DELETE,
+            &format!("/api/collections/{id}"),
+            token,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "DELETE with {token:?}");
+    }
+    let (s, _) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{id}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "reads need no token; the tailnet is the guard"
+    );
+}
+
+#[test_id(t93ra7m)]
+#[tokio::test]
+async fn malformed_collections_are_refused() {
+    let h = harness();
+    for body in [
+        json!({"title": "", "documents": [doc("a", "x")]}),
+        json!({"title": "t", "documents": []}),
+        json!({"title": "t", "documents": [doc("a", "x"), doc("a", "y")]}),
+        json!({"title": "t", "documents": [{"path": "a", "kind": "video", "text": "x"}]}),
+    ] {
+        let (s, b) = send(
+            &h.app,
+            Method::POST,
+            "/api/collections",
+            Some(TOKEN),
+            Some(body.clone()),
+        )
+        .await;
+        assert!(s.is_client_error(), "{body} gave {s}: {b}");
+    }
+}
+
+#[test_id(tspr333)]
+#[tokio::test]
+async fn healthz_reports_the_build_sha() {
+    let h = harness();
+    let (s, body) = send(&h.app, Method::GET, "/healthz", None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["sha"], margin::BUILD_SHA);
+}
+
+#[test_id(t93h820)]
+#[test]
+fn a_config_missing_a_key_is_refused_by_that_key() {
+    let full = [
+        ("listen", "127.0.0.1:7340"),
+        ("base_url", "http://margin.test"),
+        ("database", "/var/m.db"),
+        ("agents_file", "/etc/agents.toml"),
+        ("otlp_endpoint", "http://127.0.0.1:4318"),
+    ];
+    for skip in 0..full.len() {
+        let text: String = full
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != skip)
+            .map(|(_, (k, v))| format!("{k} = \"{v}\"\n"))
+            .collect();
+        let err = Config::parse(&text).unwrap_err();
+        assert!(
+            err.to_string().contains(&format!("`{}`", full[skip].0)),
+            "{err}"
+        );
+    }
+    let text: String = full
+        .iter()
+        .map(|(k, v)| format!("{k} = \"{v}\"\n"))
+        .collect();
+    assert!(Config::parse(&text).is_ok());
+}
+
+#[test_id(tsjstn2)]
+#[test]
+fn an_unspecified_listen_address_is_refused() {
+    for listen in ["0.0.0.0:7340", "[::]:7340"] {
+        let text = format!(
+            "listen = \"{listen}\"\nbase_url = \"http://x\"\ndatabase = \"d\"\nagents_file = \"a\"\notlp_endpoint = \"o\"\n"
+        );
+        assert!(
+            matches!(Config::parse(&text), Err(ConfigError::UnspecifiedListen(_))),
+            "{listen}"
+        );
+    }
+}

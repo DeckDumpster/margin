@@ -37,4 +37,3 @@ impl Clock for SystemClock {
             .unwrap_or(0)
     }
 }
-

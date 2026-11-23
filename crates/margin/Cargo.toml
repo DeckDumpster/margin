@@ -6,7 +6,7 @@ edition.workspace = true
 [dependencies]
 margin-core = { path = "../margin-core" }
 axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "signal", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "signal", "time", "fs"] }
 tower-http = { version = "0.6", features = ["timeout"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "html", "regex-fancy"] }
@@ -21,6 +21,15 @@ prost = "0.13"
 ureq = "3"
 
 [dev-dependencies]
+margin-test-id = { path = "../margin-test-id" }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+
+[features]
+integration = []
+
+[[test]]
+name = "http"
+path = "tests/http.rs"
+required-features = ["integration"]

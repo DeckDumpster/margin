@@ -1,0 +1,156 @@
+//! Every SQLite call goes through [`Db`]: a bounded queue feeding a small fixed
+//! set of threads that each own a connection, so request handlers only await.
+
+use std::path::Path;
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+use std::sync::{Arc, Mutex};
+
+use rusqlite::Connection;
+
+/// Jobs that may wait for a connection; a full queue answers 503.
+pub const QUEUE_CAPACITY: usize = 64;
+/// Connections, one per thread.
+pub const WORKERS: usize = 4;
+
+const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_collections.sql")];
+
+type Job = Box<dyn FnOnce(&mut Connection) + Send>;
+
+#[derive(Debug)]
+pub enum DbError {
+    QueueFull,
+    Closed,
+    Open(String),
+}
+
+impl std::fmt::Display for DbError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DbError::QueueFull => write!(f, "database queue is full"),
+            DbError::Closed => write!(f, "database workers are gone"),
+            DbError::Open(e) => write!(f, "opening database: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for DbError {}
+
+#[derive(Clone)]
+pub struct Db {
+    tx: SyncSender<Job>,
+}
+
+fn connect(path: &Path) -> rusqlite::Result<Connection> {
+    let conn = Connection::open(path)?;
+    conn.busy_timeout(std::time::Duration::from_secs(2))?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(conn)
+}
+
+/// Apply every migration past `PRAGMA user_version`, in order, each in its own transaction.
+pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
+    let current: usize = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    for (i, sql) in MIGRATIONS.iter().enumerate().skip(current) {
+        let tx = conn.transaction()?;
+        tx.execute_batch(sql)?;
+        tx.pragma_update(None, "user_version", i + 1)?;
+        tx.commit()?;
+    }
+    Ok(())
+}
+
+impl Db {
+    pub fn open(path: &Path) -> Result<Db, DbError> {
+        Self::open_with(path, WORKERS, QUEUE_CAPACITY)
+    }
+
+    pub fn open_with(path: &Path, workers: usize, capacity: usize) -> Result<Db, DbError> {
+        let mut first = connect(path).map_err(|e| DbError::Open(e.to_string()))?;
+        migrate(&mut first).map_err(|e| DbError::Open(e.to_string()))?;
+        let (tx, rx) = sync_channel::<Job>(capacity);
+        let rx: Arc<Mutex<Receiver<Job>>> = Arc::new(Mutex::new(rx));
+        let mut conns = vec![first];
+        for _ in 1..workers {
+            conns.push(connect(path).map_err(|e| DbError::Open(e.to_string()))?);
+        }
+        for (n, mut conn) in conns.into_iter().enumerate() {
+            let rx = rx.clone();
+            std::thread::Builder::new()
+                .name(format!("margin-db-{n}"))
+                .spawn(move || {
+                    loop {
+                        let job = match rx.lock() {
+                            Ok(guard) => guard.recv(),
+                            Err(_) => return,
+                        };
+                        match job {
+                            Ok(job) => job(&mut conn),
+                            Err(_) => return,
+                        }
+                    }
+                })
+                .map_err(|e| DbError::Open(e.to_string()))?;
+        }
+        Ok(Db { tx })
+    }
+
+    /// Queue `f` for a connection thread and await its result. Never blocks the caller's thread.
+    pub async fn call<T, F>(&self, f: F) -> Result<T, DbError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> T + Send + 'static,
+    {
+        let (done, wait) = tokio::sync::oneshot::channel();
+        let job: Job = Box::new(move |conn| {
+            let _ = done.send(f(conn));
+        });
+        self.tx.try_send(job).map_err(|e| match e {
+            TrySendError::Full(_) => DbError::QueueFull,
+            TrySendError::Disconnected(_) => DbError::Closed,
+        })?;
+        wait.await.map_err(|_| DbError::Closed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use margin_test_id::test_id;
+
+    #[test_id(toe7ny9)]
+    #[test]
+    fn migrations_set_user_version_and_are_idempotent() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn).unwrap();
+        migrate(&mut conn).unwrap();
+        let v: usize = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, MIGRATIONS.len());
+    }
+
+    #[test_id(tv435h8)]
+    #[test]
+    fn a_full_queue_is_refused_not_waited_on() {
+        let dir = tempfile::tempdir().unwrap();
+        // One worker, one slot: park the worker, fill the slot, then the next call is refused.
+        let db = Db::open_with(&dir.path().join("q.db"), 1, 1).unwrap();
+        let (park_tx, park_rx) = std::sync::mpsc::channel::<()>();
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        db.tx
+            .try_send(Box::new(move |_| {
+                started_tx.send(()).unwrap();
+                park_rx.recv().unwrap();
+            }))
+            .unwrap();
+        started_rx.recv().unwrap(); // the worker holds the first job; the queue is empty
+        db.tx.try_send(Box::new(|_| {})).unwrap(); // fills the one slot
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let refused = rt.block_on(db.call(|_| 1));
+        assert!(matches!(refused, Err(DbError::QueueFull)));
+        park_tx.send(()).unwrap();
+    }
+}

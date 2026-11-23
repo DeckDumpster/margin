@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }} · margin</title>
+<script src="/static/margin.js"></script>
+<link rel="stylesheet" href="/static/margin.css">
+</head>
+<body>
+<header class="top">
+<h1 class="title">{{ title }}</h1>
+<button type="button" id="wrap-toggle" aria-pressed="true">Wrap: on</button>
+</header>
+<p class="meta">{{ state }} · {{ docs.len() }} document{% if docs.len() != 1 %}s{% endif %}</p>
+{% if !cover_note.is_empty() %}<section class="cover">{{ cover_note }}</section>{% endif %}
+{% for doc in docs %}<section class="doc" id="doc-{{ loop.index }}">
+<h2 class="path">{{ doc.path }}</h2>
+<div class="frame"><div class="lines" style="--nw:{{ doc.digits }}">
+{% for line in doc.lines %}<div class="ln" data-line="{{ line.n }}"><span class="no">{{ line.n }}</span><span class="code">{{ line.html|safe }}</span></div>
+{% endfor %}</div></div>
+</section>
+{% endfor %}</body>
+</html>

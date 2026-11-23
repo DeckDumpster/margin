@@ -904,6 +904,7 @@ dependencies = [
  "getrandom 0.3.4",
  "http-body-util",
  "margin-core",
+ "margin-test-id",
  "opentelemetry-proto",
  "prost",
  "rusqlite",
@@ -934,9 +935,13 @@ version = "0.1.0"
 name = "margin-ui"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "chromiumoxide",
  "futures",
  "margin",
+ "margin-core",
+ "margin-test-id",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
