@@ -71,6 +71,8 @@ pub struct LineView {
     pub html: String,
     /// One per thread covering this line, in that thread's lane.
     pub marks: Vec<MarkView>,
+    /// The row's lane count: its highest lane + 1 (0 without marks).
+    pub lanes: u16,
     /// Threads whose anchor ends on this line, shown under it.
     pub threads: Vec<ThreadView>,
 }
@@ -162,18 +164,20 @@ pub fn render(
                 .enumerate()
                 .map(|(i, html)| {
                     let n = (i + 1) as u32;
+                    let row_marks: Vec<MarkView> = marks
+                        .iter()
+                        .filter(|m| m.first <= n && n <= m.last)
+                        .map(|m| MarkView {
+                            thread: m.thread.clone(),
+                            lane: m.lane,
+                        })
+                        .collect();
                     LineView {
                         n: i + 1,
                         changed: changed.contains(&n),
                         html: tinted(html, &marks, n, lens[i]),
-                        marks: marks
-                            .iter()
-                            .filter(|m| m.first <= n && n <= m.last)
-                            .map(|m| MarkView {
-                                thread: m.thread.clone(),
-                                lane: m.lane,
-                            })
-                            .collect(),
+                        lanes: row_marks.iter().map(|m| m.lane + 1).max().unwrap_or(0),
+                        marks: row_marks,
                         threads: on
                             .iter()
                             .filter(|t| t.last_line == n)

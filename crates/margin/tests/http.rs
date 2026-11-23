@@ -673,6 +673,41 @@ async fn a_line_a_range_and_an_overlapping_range_show_three_marks_in_three_lanes
     assert!(page.contains("one line inside both"));
 }
 
+/// The `style` attribute of the `.ln` row of line `n`, if it has one.
+fn row_style(html: &str, n: usize) -> Option<String> {
+    let tag = html
+        .split(&format!("data-line=\"{n}\""))
+        .nth(1)
+        .unwrap()
+        .split('>')
+        .next()
+        .unwrap();
+    tag.contains("style=\"").then(|| attr(tag, "style"))
+}
+
+#[test_id(tu4t4g5)]
+#[tokio::test]
+async fn six_threads_on_a_line_give_its_row_six_lanes_and_a_row_of_four_carries_none() {
+    let h = harness();
+    let (id, v) = small_collection(&h, 30).await;
+    for k in 0..6 {
+        let (st, _, _) = new_thread(&h, &id, v, 17, 17, &format!("comment {k}")).await;
+        assert_eq!(st, StatusCode::CREATED);
+    }
+    let (_, page) = send(&h.app, Method::GET, &format!("/c/{id}"), None, None).await;
+    assert_eq!(lanes_on_line(&page, 17), [0, 1, 2, 3, 4, 5]);
+    assert_eq!(row_style(&page, 17).as_deref(), Some("--lanes:6"));
+    assert_eq!(row_style(&page, 18), None);
+
+    let (id, v) = small_collection(&h, 30).await;
+    for k in 0..4 {
+        new_thread(&h, &id, v, 17, 17, &format!("comment {k}")).await;
+    }
+    let (_, page) = send(&h.app, Method::GET, &format!("/c/{id}"), None, None).await;
+    assert_eq!(lanes_on_line(&page, 17), [0, 1, 2, 3]);
+    assert_eq!(row_style(&page, 17), None);
+}
+
 #[test_id(tf70epi)]
 #[tokio::test]
 async fn a_reply_appears_in_the_thread_fragment() {
