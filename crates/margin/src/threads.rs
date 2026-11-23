@@ -226,7 +226,7 @@ pub fn all(conn: &Connection, collection_id: &str) -> rusqlite::Result<Vec<Threa
 pub fn marks(threads: &[&Thread]) -> Vec<Mark> {
     let anchors: Vec<Anchor> = threads.iter().map(|t| t.anchor()).collect();
     let lanes = anchor::lanes(&anchors);
-    threads
+    let mut marks: Vec<Mark> = threads
         .iter()
         .zip(lanes)
         .map(|(t, lane)| Mark {
@@ -235,7 +235,10 @@ pub fn marks(threads: &[&Thread]) -> Vec<Mark> {
             last: t.last_line,
             lane,
         })
-        .collect()
+        .collect();
+    // Thread reads order by second and random id; the DOM and the header order by lane.
+    marks.sort_by_key(|m| (m.lane, m.first));
+    marks
 }
 
 /// The marks of every thread on `version_id`, for the script to redraw after a write.
@@ -361,4 +364,80 @@ pub fn delete_comment(
     let marks = version_marks(&tx, collection_id, version_id)?;
     tx.commit()?;
     Ok(Change::Done(Deleted::Gone(marks)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::highlight::Highlighter;
+    use crate::store::{self, Kind, NewCollection, NewDocument};
+    use margin_test_id::test_id;
+
+    fn lanes_on_line(html: &str, n: usize) -> Vec<u32> {
+        let row = html.split(&format!("data-line=\"{n}\"")).nth(1).unwrap();
+        let gut = row.split("<span class=\"gut\">").nth(1).unwrap();
+        let gut = gut.split("<span class=\"code\">").next().unwrap();
+        gut.split("--lane:")
+            .skip(1)
+            .map(|c| c[..c.find('"').unwrap()].parse().unwrap())
+            .collect()
+    }
+
+    #[test_id(tps7j7x)]
+    #[test]
+    fn marks_on_a_line_come_in_lane_order_whatever_the_thread_ids() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&mut conn).unwrap();
+        let text = (1..=30).map(|n| format!("line {n}\n")).collect::<String>();
+        store::create(
+            &mut conn,
+            &NewCollection {
+                id: "col",
+                title: "t",
+                cover_note: "",
+                created_by: "x",
+                now: 100,
+                documents: &[(
+                    "doc".to_string(),
+                    NewDocument {
+                        path: "a.md".into(),
+                        kind: Kind::Prose,
+                        text,
+                    },
+                )],
+            },
+        )
+        .unwrap();
+        let version_id = store::get(&conn, "col").unwrap().unwrap().documents[0].version_id;
+        for (id, first, last) in [("c", 10, 20), ("a", 15, 25), ("b", 17, 17)] {
+            create_thread(
+                &mut conn,
+                &NewThread {
+                    thread_id: id,
+                    comment_id: &format!("{id}-comment"),
+                    collection_id: "col",
+                    version_id,
+                    anchor: Anchor::lines(first, last),
+                    body: "hello",
+                    now: 200,
+                },
+            )
+            .unwrap();
+        }
+        let collection = store::get(&conn, "col").unwrap().unwrap();
+        let page = crate::page::render(
+            &collection,
+            &all(&conn, "col").unwrap(),
+            &Highlighter::new(),
+        )
+        .unwrap();
+        let on_page = lanes_on_line(&page, 17);
+        let in_header: Vec<u32> = version_marks(&conn, "col", version_id)
+            .unwrap()
+            .iter()
+            .filter(|m| m.first <= 17 && 17 <= m.last)
+            .map(|m| u32::from(m.lane))
+            .collect();
+        assert_eq!((on_page, in_header), (vec![0, 1, 2], vec![0, 1, 2]));
+    }
 }
