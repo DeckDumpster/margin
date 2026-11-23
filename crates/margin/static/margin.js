@@ -34,13 +34,77 @@
     var body = document.body;
     var g = null; // the gesture in flight
 
+    // The sticky bar: shown once the heading has scrolled away; its bottom is the visible top.
+    var bar = document.querySelector('nav.bar');
+    var barFile = document.getElementById('bar-file');
+    var barPrev = document.getElementById('bar-prev');
+    var barNext = document.getElementById('bar-next');
+
+    function topEdge() {
+      return bar && !bar.hidden ? bar.getBoundingClientRect().bottom : 0;
+    }
+
+    function docs() {
+      return Array.prototype.slice.call(document.querySelectorAll('section.doc'));
+    }
+
+    // The last document whose top is at or above the bar's bottom (1px tolerance).
+    function currentIndex(list) {
+      var edge = topEdge() + 1;
+      var at = -1;
+      list.forEach(function (d, i) {
+        if (d.getBoundingClientRect().top <= edge) at = i;
+      });
+      return at;
+    }
+
+    function pathOf(section) {
+      var h = section.querySelector('.path');
+      return h && h.firstChild ? h.firstChild.textContent.trim() : '';
+    }
+
+    function updateBar() {
+      if (!bar) return;
+      var header = document.querySelector('header.top');
+      var show = !!header && header.getBoundingClientRect().bottom <= 0;
+      bar.hidden = !show;
+      var h1 = document.querySelector('h1.title');
+      var title = bar.querySelector('.bar-title');
+      if (h1 && title.textContent !== h1.textContent) title.textContent = h1.textContent;
+      if (!show) return;
+      var list = docs();
+      var i = currentIndex(list);
+      var full = i >= 0 ? pathOf(list[i]) : '';
+      barFile.textContent = full.split('/').pop();
+      if (full) barFile.title = full;
+      else barFile.removeAttribute('title');
+      barPrev.disabled = i < 1;
+      barNext.disabled = i + 1 >= list.length;
+    }
+
+    if (bar) {
+      window.addEventListener('scroll', updateBar, { passive: true });
+      window.addEventListener('resize', updateBar);
+      document.getElementById('bar-top').addEventListener('click', function () {
+        window.scrollTo(0, 0);
+      });
+      var jump = function (by) {
+        var list = docs();
+        var target = list[currentIndex(list) + by];
+        if (target) target.scrollIntoView();
+      };
+      barPrev.addEventListener('click', function () { jump(-1); });
+      barNext.addEventListener('click', function () { jump(1); });
+      updateBar();
+    }
+
     function rowsOf(lines) {
       if (!lines._rows) lines._rows = Array.prototype.slice.call(lines.querySelectorAll('[data-line]'));
       return lines._rows;
     }
 
     function lineAt(lines, x, y) {
-      var el = document.elementFromPoint(x, y);
+      var el = document.elementFromPoint(x, Math.max(y, topEdge() + 1));
       var row = el && el.closest('[data-line]');
       return row && lines.contains(row) ? Number(row.getAttribute('data-line')) : null;
     }
@@ -132,7 +196,8 @@
       if (!g || !g.ranging) return;
       var h = window.innerHeight;
       var dy = 0;
-      if (g.y < EDGE) dy = -MAX_SPEED * Math.min(1, (EDGE - g.y) / EDGE);
+      var top = topEdge();
+      if (g.y < top + EDGE) dy = -MAX_SPEED * Math.min(1, (top + EDGE - g.y) / EDGE);
       else if (g.y > h - EDGE) dy = MAX_SPEED * Math.min(1, (g.y - (h - EDGE)) / EDGE);
       if (dy) window.scrollBy(0, dy);
       setCur(lineAt(g.lines, g.x, g.y));
@@ -442,7 +507,8 @@
       var w = pending && pending.range;
       var rects = w ? w.getClientRects() : [];
       var end = rects.length ? rects[rects.length - 1] : null;
-      if (!end || end.bottom < 0 || end.top > window.innerHeight) {
+      var top = topEdge();
+      if (!end || end.bottom < top || end.top > window.innerHeight) {
         cbtn.hidden = true;
         return;
       }
@@ -450,7 +516,7 @@
       var width = cbtn.offsetWidth;
       var height = cbtn.offsetHeight;
       cbtn.style.left = Math.max(8, Math.min(end.right, window.innerWidth - width - 8)) + 'px';
-      cbtn.style.top = Math.max(8, Math.min(end.bottom + 8, window.innerHeight - height - 8)) + 'px';
+      cbtn.style.top = Math.max(top + 8, Math.min(end.bottom + 8, window.innerHeight - height - 8)) + 'px';
     }
 
     document.addEventListener('selectionchange', function () {
@@ -736,11 +802,12 @@
     // The first row whose bottom is below the top of the screen, if it is on screen at all.
     function topRow() {
       var rows = document.querySelectorAll('.ln');
+      var top = topEdge();
       var lo = 0;
       var hi = rows.length;
       while (lo < hi) {
         var mid = (lo + hi) >> 1;
-        if (rows[mid].getBoundingClientRect().bottom > 0) hi = mid;
+        if (rows[mid].getBoundingClientRect().bottom > top) hi = mid;
         else lo = mid + 1;
       }
       var row = rows[lo];
@@ -749,7 +816,7 @@
 
     function onScreen(el) {
       var r = el.getBoundingClientRect();
-      return r.bottom > 0 && r.top < window.innerHeight;
+      return r.bottom > topEdge() && r.top < window.innerHeight;
     }
 
     // What to keep still while the page is rewritten: the focused form if it is on screen, else the
@@ -973,6 +1040,7 @@
         var held = holdFocus();
         var restorePlace = holdPlace(plan);
         swapPage(plan, held);
+        updateBar();
         applyChanges(d);
         held.restore();
         if (restorePlace) restorePlace();

@@ -15,6 +15,7 @@
   --l1: #bf8700;
   --l2: #1a7f37;
   --l3: #cf222e;
+  --bar-h: 3rem;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -36,7 +37,7 @@
   }
 }
 * { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: calc(var(--bar-h) + env(safe-area-inset-top, 0px)); }
 body {
   margin: 0;
   padding: 0.75rem;
@@ -182,3 +183,40 @@ html:not(.nowrap) .code {
 .note { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .waits { margin-top: 0.2rem; font-size: 0.9rem; }
 .older { display: inline-block; min-height: 2.75rem; line-height: 2.75rem; color: var(--accent); }
+
+/* The sticky bar: shown once the page's heading has scrolled away. */
+.bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: calc(var(--bar-h) + env(safe-area-inset-top, 0px));
+  padding: env(safe-area-inset-top, 0px) max(0.75rem, env(safe-area-inset-right, 0px)) 0 max(0.75rem, env(safe-area-inset-left, 0px));
+  background: var(--bg);
+  border-bottom: 1px solid var(--rule);
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.bar[hidden] { display: none; }
+.bar button {
+  flex: none;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  padding: 0 0.6rem;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: 0.4rem;
+}
+.bar button:disabled { opacity: 0.4; }
+.bar-text { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.bar-title, .bar-file { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-title { font-weight: 600; }
+.bar-file { color: var(--dim); font: 0.8rem/1.25 ui-monospace, monospace; }
+section.doc:last-of-type { min-height: calc(100vh - var(--bar-h) - env(safe-area-inset-top, 0px)); }

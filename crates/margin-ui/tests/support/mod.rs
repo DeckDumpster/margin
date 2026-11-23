@@ -46,9 +46,20 @@ pub async fn launch(dir: &Path) -> (Browser, tokio::task::JoinHandle<()>) {
 /// Serves the fixture collection in-process; returns its page URL and the directory that holds its database.
 #[allow(dead_code)]
 pub async fn serve() -> (String, tempfile::TempDir) {
+    serve_docs("Fixture", &[("long.rs", FIXTURE.to_string())], "").await
+}
+
+/// Serves one collection, `fixture`, of the given (path, text) documents; `agents` is the
+/// agents file's text. Returns its page URL and the directory that holds its database.
+#[allow(dead_code)]
+pub async fn serve_docs(
+    title: &str,
+    documents: &[(&str, String)],
+    agents_toml: &str,
+) -> (String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let agents = dir.path().join("agents.toml");
-    std::fs::write(&agents, "").unwrap();
+    std::fs::write(&agents, agents_toml).unwrap();
     let config = Config::parse(&format!(
         "listen = \"127.0.0.1:0\"\nbase_url = \"http://127.0.0.1\"\ndatabase = \"{}\"\nagents_file = \"{}\"\notlp_endpoint = \"http://127.0.0.1:1\"\ninstance = \"test\"\n",
         dir.path().join("m.db").display(),
@@ -63,26 +74,33 @@ pub async fn serve() -> (String, tempfile::TempDir) {
         metrics: Metrics::detached(),
         highlighter: Arc::new(Highlighter::new()),
     };
+    let title = title.to_string();
+    let documents: Vec<(String, NewDocument)> = documents
+        .iter()
+        .enumerate()
+        .map(|(i, (path, text))| {
+            (
+                format!("d{}", i + 1),
+                NewDocument {
+                    path: (*path).into(),
+                    kind: Kind::Code,
+                    text: text.clone(),
+                },
+            )
+        })
+        .collect();
     state
         .db
-        .call(|conn| {
-            let docs = vec![(
-                "d1".to_string(),
-                NewDocument {
-                    path: "long.rs".into(),
-                    kind: Kind::Code,
-                    text: FIXTURE.to_string(),
-                },
-            )];
+        .call(move |conn| {
             margin::store::create(
                 conn,
                 &NewCollection {
                     id: "fixture",
-                    title: "Fixture",
+                    title: &title,
                     cover_note: "A long file.",
                     created_by: "ui",
                     now: 0,
-                    documents: &docs,
+                    documents: &documents,
                 },
             )
         })
@@ -99,10 +117,16 @@ pub async fn serve() -> (String, tempfile::TempDir) {
 /// `c2` of `last`; it evaluates to `true`.
 #[allow(dead_code)]
 pub fn select_js(first: u32, c1: u32, last: u32, c2: u32) -> String {
+    select_in_js("", first, c1, last, c2)
+}
+
+/// `select_js` within the elements `scope` names (a selector prefix such as `#doc-2 `).
+#[allow(dead_code)]
+pub fn select_in_js(scope: &str, first: u32, c1: u32, last: u32, c2: u32) -> String {
     format!(
         "(() => {{
           const at = (n, col) => {{
-            const code = document.querySelector('[data-line=\"' + n + '\"] .code');
+            const code = document.querySelector('{scope}[data-line=\"' + n + '\"] .code');
             const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
             let left = col;
             for (let t = walker.nextNode(); t; t = walker.nextNode()) {{
@@ -111,7 +135,7 @@ pub fn select_js(first: u32, c1: u32, last: u32, c2: u32) -> String {
             }}
             throw new Error('column past the line');
           }};
-          document.querySelector('[data-line=\"{first}\"]').scrollIntoView({{block: 'center'}});
+          document.querySelector('{scope}[data-line=\"{first}\"]').scrollIntoView({{block: 'center'}});
           const [a, ao] = at({first}, {c1});
           const [b, bo] = at({last}, {c2});
           const r = document.createRange();
