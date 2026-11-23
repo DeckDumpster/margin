@@ -9,6 +9,7 @@ pub mod config;
 pub mod db;
 pub mod feed;
 pub mod highlight;
+pub mod home;
 pub mod metrics;
 pub mod page;
 pub mod store;

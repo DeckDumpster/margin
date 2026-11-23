@@ -51,7 +51,7 @@ impl State {
             State::Closed => "closed",
         }
     }
-    fn parse(s: &str) -> rusqlite::Result<State> {
+    pub(crate) fn parse(s: &str) -> rusqlite::Result<State> {
         match s {
             "open" => Ok(State::Open),
             "published" => Ok(State::Published),

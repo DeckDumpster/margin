@@ -5,6 +5,7 @@ pub mod anchor;
 pub mod carry;
 pub mod highlight;
 pub mod lines;
+pub mod waits;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

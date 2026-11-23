@@ -41,6 +41,7 @@ impl Rng for CountingRng {
 
 struct Harness {
     app: Router,
+    db: Db,
     _dir: tempfile::TempDir,
 }
 
@@ -54,8 +55,9 @@ fn harness() -> Harness {
         agents.display()
     ))
     .unwrap();
+    let db = Db::open(&config.database).unwrap();
     let state = AppState {
-        db: Db::open(&config.database).unwrap(),
+        db: db.clone(),
         config: Arc::new(config),
         clock: Arc::new(FixedClock(1_700_000_000)),
         rng: Arc::new(CountingRng(AtomicU64::new(1))),
@@ -64,6 +66,7 @@ fn harness() -> Harness {
     };
     Harness {
         app: router(state),
+        db,
         _dir: dir,
     }
 }
@@ -1119,6 +1122,257 @@ async fn columns_after_a_tab_and_an_emoji_count_one_each() {
         .map(|(_, t)| text_of(t))
         .collect();
     assert_eq!(texts, ["\u{1F642}", "word"]);
+
+// ---- the home page ----
+
+mod home {
+    use super::*;
+    use margin::store::{self, Kind, NewCollection, NewDocument, Patch, State};
+    use margin::threads::{self, NewThread, Visibility};
+    use margin_core::anchor::Anchor;
+
+    const READER: &str = "reader";
+
+    /// A three-line collection created at `at`; returns its document version id.
+    async fn collection(h: &Harness, id: &str, title: &str, note: &str, by: &str, at: i64) -> i64 {
+        let (id, title, note, by) = (
+            id.to_string(),
+            title.to_string(),
+            note.to_string(),
+            by.to_string(),
+        );
+        h.db.call(move |conn| {
+            let docs = vec![(
+                format!("{id}-d"),
+                NewDocument {
+                    path: "a.txt".into(),
+                    kind: Kind::Code,
+                    text: "a\nb\nc\n".into(),
+                },
+            )];
+            store::create(
+                conn,
+                &NewCollection {
+                    id: &id,
+                    title: &title,
+                    cover_note: &note,
+                    created_by: &by,
+                    now: at,
+                    documents: &docs,
+                },
+            )
+            .unwrap();
+            store::get(conn, &id).unwrap().unwrap().documents[0].version_id
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn thread(
+        h: &Harness,
+        coll: &str,
+        version: i64,
+        tid: &str,
+        author: &str,
+        vis: Visibility,
+        at: i64,
+    ) {
+        let (coll, tid, author) = (coll.to_string(), tid.to_string(), author.to_string());
+        h.db.call(move |conn| {
+            threads::create_thread(
+                conn,
+                &NewThread {
+                    thread_id: &tid,
+                    comment_id: &format!("{tid}-c0"),
+                    collection_id: &coll,
+                    version_id: version,
+                    anchor: Anchor {
+                        first: 1,
+                        last: 1,
+                        cols: None,
+                    },
+                    author: &author,
+                    visibility: vis,
+                    body: "first",
+                    now: at,
+                },
+            )
+            .ok()
+            .unwrap();
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn reply(
+        h: &Harness,
+        coll: &str,
+        tid: &str,
+        n: u32,
+        author: &str,
+        vis: Visibility,
+        at: i64,
+    ) {
+        let (coll, tid, author) = (coll.to_string(), tid.to_string(), author.to_string());
+        h.db.call(move |conn| {
+            threads::add_comment(
+                conn,
+                &coll,
+                &tid,
+                &format!("{tid}-c{n}"),
+                &author,
+                vis,
+                "more",
+                at,
+            )
+            .unwrap()
+            .unwrap();
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn set_state(h: &Harness, id: &str, state: State, at: i64) {
+        let id = id.to_string();
+        h.db.call(move |conn| {
+            store::patch(
+                conn,
+                &id,
+                &Patch {
+                    state: Some(state),
+                    ..Patch::default()
+                },
+                at,
+            )
+            .unwrap();
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn get(h: &Harness, uri: &str) -> String {
+        let (status, html) = send(&h.app, Method::GET, uri, None, None).await;
+        assert_eq!(status, StatusCode::OK, "{html}");
+        html
+    }
+
+    /// The collection ids linked from the page, in order.
+    fn links(html: &str) -> Vec<String> {
+        html.split("href=\"/c/")
+            .skip(1)
+            .map(|c| c[..c.find('"').unwrap()].to_string())
+            .collect()
+    }
+
+    #[test_id(ts8oq24)]
+    #[tokio::test]
+    async fn a_closed_collection_is_absent_from_the_home_page() {
+        let h = harness();
+        collection(&h, "open1", "Still open", "", "ada", 10).await;
+        collection(&h, "gone1", "Already closed", "", "ada", 20).await;
+        set_state(&h, "gone1", State::Closed, 30).await;
+        let html = get(&h, "/").await;
+        assert_eq!(links(&html), ["open1"]);
+        assert!(!html.contains("Already closed"), "{html}");
+    }
+
+    #[test_id(t4ht1bn)]
+    #[tokio::test]
+    async fn collections_are_ordered_by_their_latest_activity() {
+        let h = harness();
+        let va = collection(&h, "a", "A", "", "ada", 10).await;
+        collection(&h, "b", "B", "", "ada", 20).await;
+        collection(&h, "c", "C", "", "ada", 30).await;
+        // Created first, but the newest thing to happen is in A.
+        thread(&h, "a", va, "ta", "ada", Visibility::Now, 40).await;
+        assert_eq!(links(&get(&h, "/").await), ["a", "c", "b"]);
+    }
+
+    #[test_id(tm16817)]
+    #[tokio::test]
+    async fn an_entry_shows_title_first_line_and_the_counts_of_its_seeded_threads() {
+        let h = harness();
+        let v = collection(&h, "x", "The <plan>", "First line\nsecond line", "ada", 10).await;
+        // Waits on the reader: the agent spoke last (two threads).
+        thread(&h, "x", v, "t1", "ada", Visibility::Now, 11).await;
+        thread(&h, "x", v, "t2", "bo", Visibility::Now, 12).await;
+        // Waits on bo: the reader answered bo.
+        thread(&h, "x", v, "t3", "bo", Visibility::Now, 13).await;
+        reply(&h, "x", "t3", 1, READER, Visibility::Now, 14).await;
+        // Waits on ada, the owner: the reader began it.
+        thread(&h, "x", v, "t4", READER, Visibility::Now, 15).await;
+        // Three held comments: one in a visible thread, two in a thread that is all held.
+        reply(&h, "x", "t1", 1, "ada", Visibility::Held, 16).await;
+        thread(&h, "x", v, "t5", "bo", Visibility::Held, 17).await;
+        reply(&h, "x", "t5", 1, "bo", Visibility::Held, 18).await;
+        set_state(&h, "x", State::Published, 19).await;
+
+        let html = get(&h, "/").await;
+        assert!(html.contains("The &#60;plan&#62;"), "{html}");
+        assert!(html.contains("First line"), "{html}");
+        assert!(!html.contains("second line"), "{html}");
+        assert!(html.contains("published"), "{html}");
+        assert!(
+            html.contains("2 wait on you · 1 waits on ada · 1 waits on bo · 3 held for Publish"),
+            "{html}"
+        );
+    }
+
+    #[test_id(tl3pq0g)]
+    #[tokio::test]
+    async fn zero_counts_are_left_out_of_the_waits_line() {
+        let h = harness();
+        let v = collection(&h, "y", "Y", "", "ada", 10).await;
+        thread(&h, "y", v, "t1", "ada", Visibility::Now, 11).await;
+        let html = get(&h, "/").await;
+        assert!(html.contains("1 waits on you"), "{html}");
+        assert!(!html.contains("held for Publish"), "{html}");
+        assert!(!html.contains("0 wait"), "{html}");
+    }
+
+    #[test_id(t0pb0a8)]
+    #[tokio::test]
+    async fn sixty_collections_are_fifty_then_ten_behind_the_older_link() {
+        let h = harness();
+        for n in 0..60i64 {
+            collection(
+                &h,
+                &format!("c{n:02}"),
+                &format!("Title {n}"),
+                "",
+                "ada",
+                100 + n,
+            )
+            .await;
+        }
+        let first = get(&h, "/").await;
+        let ids = links(&first);
+        assert_eq!(ids.len(), 50);
+        assert_eq!(ids[0], "c59");
+        assert_eq!(ids[49], "c10");
+        let older = first
+            .split("class=\"older\" href=\"")
+            .nth(1)
+            .expect("an older link on page 1")
+            .split('"')
+            .next()
+            .unwrap()
+            .replace("&amp;", "&");
+        let second = get(&h, &older).await;
+        let rest = links(&second);
+        assert_eq!(rest.len(), 10);
+        assert_eq!(rest[0], "c09");
+        assert_eq!(rest[9], "c00");
+        assert!(!second.contains("class=\"older\""), "no third page");
+    }
+
+    #[test_id(tz12j7o)]
+    #[tokio::test]
+    async fn a_bad_cursor_is_a_400() {
+        let h = harness();
+        let (status, _) = send(&h.app, Method::GET, "/?after=nonsense", None, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
 }
 
 fn numbered(lines: impl IntoIterator<Item = String>) -> String {
