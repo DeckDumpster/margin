@@ -1,7 +1,10 @@
 //! The cover note's markdown, rendered to HTML that carries nothing the author did not write as
 //! markdown: raw HTML stays text, and only a few link schemes survive.
 
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, html};
+use pulldown_cmark::{CowStr, Event, Options, Parser, Tag, TagEnd, html};
+
+use crate::highlight::escape;
+use crate::refs::Refs;
 
 /// Whether a link to `dest` may stay a link.
 fn safe_link(dest: &str) -> bool {
@@ -14,18 +17,32 @@ fn safe_link(dest: &str) -> bool {
 
 /// `text` as HTML: markdown with tables; raw HTML shown as text; line breaks kept; links only to
 /// `http`, `https`, `mailto` or `#…` (any other keeps its text alone); an image as its alt text.
-pub fn html(text: &str) -> String {
+/// A code span that `refs` resolves is linked to what it names, unless the author linked it.
+pub fn html(text: &str, refs: &Refs) -> String {
     // One entry per open link: whether it stays a link.
     let mut links: Vec<bool> = Vec::new();
+    let mut in_link = 0usize;
     let events = Parser::new_ext(text, Options::ENABLE_TABLES).filter_map(|e| match e {
         Event::Html(h) | Event::InlineHtml(h) => Some(Event::Text(h)),
         Event::SoftBreak => Some(Event::HardBreak),
+        Event::Code(code) if in_link == 0 => Some(match refs.resolve(&code) {
+            Some(href) => Event::Html(CowStr::from(format!(
+                "<a href=\"{}\"><code>{}</code></a>",
+                escape(&href),
+                escape(&code)
+            ))),
+            None => Event::Code(code),
+        }),
         Event::Start(Tag::Link { ref dest_url, .. }) => {
+            in_link += 1;
             let keep = safe_link(dest_url);
             links.push(keep);
             keep.then_some(e)
         }
-        Event::End(TagEnd::Link) => links.pop().unwrap_or(false).then_some(e),
+        Event::End(TagEnd::Link) => {
+            in_link = in_link.saturating_sub(1);
+            links.pop().unwrap_or(false).then_some(e)
+        }
         Event::Start(Tag::Image { .. }) | Event::End(TagEnd::Image) => None,
         e => Some(e),
     });
@@ -36,8 +53,12 @@ pub fn html(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::html;
+    use crate::refs::Refs;
     use margin_test_id::test_id;
+
+    fn html(text: &str) -> String {
+        super::html(text, &Refs::none())
+    }
 
     #[test_id(twmqa6h)]
     #[test]

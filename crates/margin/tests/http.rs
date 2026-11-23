@@ -2320,3 +2320,221 @@ async fn the_agent_feed_names_a_review_by_its_opaque_id() {
         assert_eq!(ch["collection_id"], id, "{body}");
     }
 }
+
+mod code_spans {
+    use super::*;
+
+    const REPO: &str = "https://git.example.com/org/spira";
+
+    /// Every code span spelled here, and where each links when it does.
+    fn spans() -> Vec<(&'static str, Option<String>)> {
+        let blob = |tail: &str| Some(format!("{REPO}/blob/{COMMIT}/{tail}"));
+        vec![
+            ("src/one.rs", Some("#doc-1".into())),
+            ("two.rs", Some("#doc-2".into())),
+            ("one.rs", None),
+            ("src/one.rs:2", Some("#doc-1-2".into())),
+            ("src/one.rs:2-3", Some("#doc-1-2".into())),
+            ("src/one.rs:99", Some("#doc-1".into())),
+            ("src/one.rs:3-2", Some("#doc-1".into())),
+            ("src/one.rs:0", Some("#doc-1".into())),
+            ("src/one.rs:4", Some("#doc-1-4".into())),
+            ("src/one.rs:5", Some("#doc-1".into())),
+            ("src/one.rs::helper", Some("#doc-1-2".into())),
+            ("two.rs::Dup", Some("#doc-2-2".into())),
+            ("src/one.rs::Dup", Some("#doc-1-3".into())),
+            ("src/one.rs::nothing", Some("#doc-1".into())),
+            ("helper()", Some("#doc-1-2".into())),
+            ("MAX", Some("#doc-1-1".into())),
+            ("only_two", Some("#doc-2-1".into())),
+            ("Dup", None),
+            ("nothing_here", None),
+            ("Vec::new", None),
+            ("crates/x/src/lib.rs", blob("crates/x/src/lib.rs")),
+            ("crates/x/src/lib.rs:12", blob("crates/x/src/lib.rs#L12")),
+            (
+                "crates/x/src/lib.rs:12-14",
+                blob("crates/x/src/lib.rs#L12-L14"),
+            ),
+            ("crates/x/src/lib.rs::foo", blob("crates/x/src/lib.rs")),
+            ("lib.rs", None),
+            ("../x/lib.rs", None),
+            ("x/../lib.rs", None),
+            ("/etc/lib.rs", None),
+            ("x/Makefile", None),
+        ]
+    }
+
+    fn markdown() -> String {
+        spans()
+            .iter()
+            .map(|(s, _)| format!("- `{s}`\n"))
+            .collect::<String>()
+    }
+
+    fn files() -> Vec<Value> {
+        vec![
+            doc(
+                "src/one.rs",
+                "const MAX: u32 = 1;\nfn helper() {}\nstruct Dup;\nfn main() {}\n",
+            ),
+            doc("src/two.rs", "fn only_two() {}\nstruct Dup;\n"),
+            doc("lib/one.rs", "fn lib_one() {}\n"),
+        ]
+    }
+
+    /// `(href, span)` of each linked code span in `html`, and the plain ones.
+    fn found(html: &str) -> (Vec<(String, String)>, Vec<String>) {
+        let unescape = |s: &str| {
+            s.replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&amp;", "&")
+        };
+        let (mut linked, mut plain) = (Vec::new(), Vec::new());
+        for (at, _) in html.match_indices("<code>") {
+            let part = &html[at + "<code>".len()..];
+            let text = unescape(&part[..part.find("</code>").unwrap()]);
+            let before = &html[..at];
+            match before
+                .strip_suffix('>')
+                .and_then(|b| b.rsplit_once("<a href=\""))
+            {
+                Some((_, href)) if href.ends_with('"') => {
+                    linked.push((unescape(href.trim_end_matches('"')), text))
+                }
+                _ => plain.push(text),
+            }
+        }
+        (linked, plain)
+    }
+
+    fn expected(source: bool) -> (Vec<(String, String)>, Vec<String>) {
+        let (mut linked, mut plain) = (Vec::new(), Vec::new());
+        for (span, href) in spans() {
+            match href {
+                Some(h) if source || !h.starts_with("https:") => linked.push((h, span.to_string())),
+                _ => plain.push(span.to_string()),
+            }
+        }
+        (linked, plain)
+    }
+
+    async fn review(h: &Harness, source: bool, cover: &str) -> (String, i64) {
+        let mut body = json!({"title": "t", "cover_note": cover, "documents": files()});
+        if source {
+            body["source"] = json!({"repository": REPO, "commit": COMMIT});
+        }
+        let (status, made) = send(
+            &h.app,
+            Method::POST,
+            "/api/collections",
+            Some(TOKEN),
+            Some(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        let made: Value = serde_json::from_str(&made).unwrap();
+        let id = made["id"].as_str().unwrap().to_string();
+        let (_, got) = send(
+            &h.app,
+            Method::GET,
+            &format!("/api/collections/{id}"),
+            None,
+            None,
+        )
+        .await;
+        let got: Value = serde_json::from_str(&got).unwrap();
+        (id, got["documents"][0]["version_id"].as_i64().unwrap())
+    }
+
+    fn cover_of(page: &str) -> &str {
+        let cover = page.split("<section class=\"cover\">").nth(1).unwrap();
+        cover.split("</section>").next().unwrap()
+    }
+
+    #[test_id(ttx077q)]
+    #[tokio::test]
+    async fn a_cover_note_links_each_code_span_that_names_something_in_the_review() {
+        let h = harness();
+        let (id, _) = review(&h, true, &markdown()).await;
+        let page = reader_page(&h, &id).await;
+        assert_eq!(found(cover_of(&page)), expected(true));
+        assert!(page.contains("id=\"doc-1-4\"") && page.contains("id=\"doc-2-2\""));
+    }
+
+    #[test_id(tt4fe9i)]
+    #[tokio::test]
+    async fn a_span_naming_a_source_file_stays_plain_when_the_review_has_no_source() {
+        let h = harness();
+        let (id, _) = review(&h, false, &markdown()).await;
+        let page = reader_page(&h, &id).await;
+        assert_eq!(found(cover_of(&page)), expected(false));
+    }
+
+    #[test_id(tv8gk2y)]
+    #[tokio::test]
+    async fn a_comment_links_its_code_spans_in_the_page_the_posted_fragment_and_the_feed() {
+        let h = harness();
+        let text = format!("{}\nsee <b>this</b> & \"that\"", markdown());
+        let (id, v) = review(&h, true, "x").await;
+        let (status, fragment, _) = new_thread(&h, &id, v, 1, 1, &text).await;
+        assert_eq!(status, StatusCode::CREATED, "{fragment}");
+        assert_eq!(found(&fragment), expected(true));
+        assert!(
+            fragment.contains("&lt;b&gt;") && !fragment.contains("<b>"),
+            "{fragment}"
+        );
+        let source = attr(&fragment, "data-source");
+        let decoded = source
+            .replace("&#60;", "<")
+            .replace("&#62;", ">")
+            .replace("&#38;", "&")
+            .replace("&#34;", "\"")
+            .replace("&#x3d;", "=")
+            .replace("&#x2f;", "/");
+        assert_eq!(decoded, text);
+
+        let page = reader_page(&h, &id).await;
+        let thread = page.split("<div class=\"thread\"").nth(1).unwrap();
+        assert_eq!(found(thread), expected(true));
+
+        let tid = attr(&fragment, "data-thread");
+        let (_, feed) = send(
+            &h.app,
+            Method::GET,
+            &format!("/c/{id}/changes?after=0"),
+            None,
+            None,
+        )
+        .await;
+        let feed: Value = serde_json::from_str(&feed).unwrap();
+        let from_feed = feed["threads"][0]["html"].as_str().unwrap();
+        assert_eq!(feed["threads"][0]["id"], tid.as_str());
+        assert_eq!(found(from_feed), expected(true));
+
+        let (_, reply) = send(
+            &h.app,
+            Method::POST,
+            &format!("/c/{id}/threads/{tid}/comments"),
+            None,
+            Some(json!({"body": "and `src/two.rs:2`"})),
+        )
+        .await;
+        assert!(reply.contains("href=\"#doc-2-2\""), "{reply}");
+    }
+
+    #[test_id(tx6ya3z)]
+    #[tokio::test]
+    async fn a_span_inside_a_link_the_author_wrote_is_not_linked_again() {
+        let h = harness();
+        let (id, _) = review(&h, true, "[`src/one.rs`](https://e.com) and `src/one.rs`").await;
+        let cover = reader_page(&h, &id).await;
+        let cover = cover_of(&cover);
+        assert_eq!(cover.matches("<a ").count(), 2, "{cover}");
+        assert!(
+            cover.contains("<a href=\"https://e.com\"><code>src/one.rs</code></a>"),
+            "{cover}"
+        );
+    }
+}

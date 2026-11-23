@@ -503,17 +503,33 @@ fn json_body<T>(
 
 /// The server-rendered thread, open, with the version's marks in `x-margin-marks` when the
 /// write changed them (a thread appeared or went).
-fn fragment(
+async fn fragment(
+    s: &AppState,
+    collection: &str,
     thread: &Thread,
     marks: Option<&[Mark]>,
     status: StatusCode,
 ) -> Result<Response, ApiError> {
+    let refs = refs_of(s, collection).await?;
     let html = crate::page::ThreadFragment {
-        thread: crate::page::ThreadView::new(thread, true),
+        thread: crate::page::ThreadView::new(thread, true, &refs),
     }
     .render()
     .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(with_marks((status, Html(html)).into_response(), marks))
+}
+
+/// What the collection's code spans can name; nothing when it is gone. Parses its documents off
+/// the event loop, which costs nothing for the ones already highlighted.
+async fn refs_of(s: &AppState, collection: &str) -> Result<crate::refs::Refs, ApiError> {
+    let id = collection.to_string();
+    let Some(c) = s.run(move |conn| store::get(conn, &id)).await? else {
+        return Ok(crate::refs::Refs::none());
+    };
+    let highlighter = s.highlighter.clone();
+    tokio::task::spawn_blocking(move || crate::refs::Refs::new(&c, &highlighter))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))
 }
 
 fn with_marks(mut resp: Response, marks: Option<&[Mark]>) -> Response {
@@ -556,6 +572,7 @@ async fn create_thread(
     };
     let (thread_id, comment_id) = (margin_core::new_id(&*s.rng), margin_core::new_id(&*s.rng));
     let now = s.clock.now_unix();
+    let collection = id.clone();
     let made = s
         .run(move |conn| {
             let made = threads::create_thread(
@@ -586,7 +603,7 @@ async fn create_thread(
     match made {
         Ok((marks, thread)) => {
             s.comment_written(threads::READER, Visibility::Now);
-            fragment(&thread, Some(&marks), StatusCode::CREATED)
+            fragment(&s, &collection, &thread, Some(&marks), StatusCode::CREATED).await
         }
         Err(CreateError::NoVersion) => Err(ApiError::NotFound),
         Err(CreateError::Anchor(e)) => Err(ApiError::BadRequest(e.to_string())),
@@ -607,6 +624,7 @@ async fn reply(
     let text = clean_body(&json_body(body)?.body)?;
     let comment_id = margin_core::new_id(&*s.rng);
     let now = s.clock.now_unix();
+    let collection = id.clone();
     let thread = s
         .run(move |conn| {
             threads::add_comment(
@@ -623,7 +641,7 @@ async fn reply(
         .await?
         .ok_or(ApiError::NotFound)?;
     s.comment_written(threads::READER, Visibility::Now);
-    fragment(&thread, None, StatusCode::CREATED)
+    fragment(&s, &collection, &thread, None, StatusCode::CREATED).await
 }
 
 async fn edit_comment(
@@ -633,13 +651,14 @@ async fn edit_comment(
 ) -> Result<Response, ApiError> {
     let text = clean_body(&json_body(body)?.body)?;
     let now = s.clock.now_unix();
+    let collection = id.clone();
     match s
         .run(move |conn| threads::edit_comment(conn, Some(&id), threads::READER, &cid, &text, now))
         .await?
     {
         Change::NotFound => Err(ApiError::NotFound),
         Change::NotYours => Err(ApiError::Forbidden),
-        Change::Done(thread) => fragment(&thread, None, StatusCode::OK),
+        Change::Done(thread) => fragment(&s, &collection, &thread, None, StatusCode::OK).await,
     }
 }
 
@@ -649,13 +668,16 @@ async fn delete_comment(
     Path((id, cid)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
     let now = s.clock.now_unix();
+    let collection = id.clone();
     match s
         .run(move |conn| threads::delete_comment(conn, Some(&id), threads::READER, &cid, now))
         .await?
     {
         Change::NotFound => Err(ApiError::NotFound),
         Change::NotYours => Err(ApiError::Forbidden),
-        Change::Done(Deleted::Left(thread)) => fragment(&thread, None, StatusCode::OK),
+        Change::Done(Deleted::Left(thread)) => {
+            fragment(&s, &collection, &thread, None, StatusCode::OK).await
+        }
         Change::Done(Deleted::Gone(marks)) => Ok(with_marks(
             StatusCode::NO_CONTENT.into_response(),
             Some(&marks),
@@ -1085,12 +1107,17 @@ async fn page_changes(
     })
     .await?;
     s.feed_answered(started, &found.rows);
+    let refs = if found.threads.is_empty() {
+        crate::refs::Refs::none()
+    } else {
+        refs_of(&s, &id).await?
+    };
     let threads = found
         .threads
         .iter()
         .map(|t| {
             let html = crate::page::ThreadFragment {
-                thread: crate::page::ThreadView::new(t, false),
+                thread: crate::page::ThreadView::new(t, false, &refs),
             }
             .render()
             .map_err(|e| ApiError::Internal(e.to_string()))?;

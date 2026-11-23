@@ -1,5 +1,5 @@
 <div class="thread" id="thread-{{ thread.id }}" data-thread="{{ thread.id }}" data-first="{{ thread.first }}" data-last="{{ thread.last }}"{% if !thread.open %} hidden{% endif %}>
 {% if let Some(label) = thread.label %}<div class="carry">{{ label }}</div>
-{% endif %}{% for c in thread.comments %}<div class="cm" data-comment="{{ c.id }}"><div class="who">{{ c.author }}</div><div class="body">{{ c.body }}</div>{% if c.mine %}<div class="acts"><button type="button" data-act="edit">Edit</button><button type="button" data-act="delete">Delete</button></div>{% endif %}</div>
+{% endif %}{% for c in thread.comments %}<div class="cm" data-comment="{{ c.id }}"><div class="who">{{ c.author }}</div><div class="body" data-source="{{ c.body }}">{{ c.html|safe }}</div>{% if c.mine %}<div class="acts"><button type="button" data-act="edit">Edit</button><button type="button" data-act="delete">Delete</button></div>{% endif %}</div>
 {% endfor %}<form class="reply"><textarea name="body" rows="2" aria-label="Reply" placeholder="Reply"></textarea><button type="submit">Reply</button></form>
 </div>
