@@ -3,11 +3,29 @@
 # every assertion lives in a cargo test.
 set -euo pipefail
 
+# `--build-only` compiles everything the gate tests and runs no test, so the harness can time
+# only the tests against its gate cap. With no argument the gate runs in full.
+build_only=0
+case "${1-}" in
+  "") ;;
+  --build-only) build_only=1 ;;
+  *) echo "usage: bash gate.sh [--build-only]" >&2; exit 2 ;;
+esac
+if [ "$#" -gt 1 ]; then echo "usage: bash gate.sh [--build-only]" >&2; exit 2; fi
+
 CHROME_VERSION="156.0.8078.79"
 CHROME_SHA256="7088865f510de22a83226817266274a1a4a57157d78ab429e6315701b19669f7"
 
 TERRAFORM_VERSION="1.13.3"
 TERRAFORM_SHA256="71fc43d92ea09907be5d416d2405a6a9c2d1ceaed633f5e175c0af26e8c4b365"
+
+if [ "$build_only" = 1 ]; then
+  cargo clippy --workspace --all-targets -- -D warnings
+  cargo test --workspace --all-targets --no-run
+  cargo test -p margin --features integration --test http --test feed --no-run
+  cargo test -p margin-ui --no-run
+  exit 0
+fi
 
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
