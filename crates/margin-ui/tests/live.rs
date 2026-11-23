@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chromiumoxide::browser::{Browser, BrowserConfig};
-use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
+use chromiumoxide::cdp::browser_protocol::emulation::{
+    MediaFeature, SetDeviceMetricsOverrideParams, SetEmulatedMediaParams,
+};
 use chromiumoxide::page::{Page, ScreenshotParams};
 use futures::StreamExt;
 use margin::agents::{OsRng, hash_token};
@@ -713,6 +715,7 @@ async fn the_files_list_jumps_to_a_section_and_follows_comments_versions_and_a_n
     let rig = rig().await;
     let page = &rig.page;
     assert_eq!(eval::<String>(page, ROW).await, "60 lines · no comments");
+    top_shots(page).await;
     assert!(
         eval::<bool>(
             page,
@@ -777,4 +780,38 @@ async fn the_files_list_jumps_to_a_section_and_follows_comments_versions_and_a_n
     )
     .await;
     rig.close().await;
+}
+
+/// The page top at both widths in both colour schemes, without the list ("before") and with it.
+async fn top_shots(page: &Page) {
+    for (scheme, width) in [
+        ("light", 390),
+        ("light", 1280),
+        ("dark", 390),
+        ("dark", 1280),
+    ] {
+        page.execute(
+            SetEmulatedMediaParams::builder()
+                .feature(MediaFeature::new("prefers-color-scheme", scheme))
+                .build(),
+        )
+        .await
+        .unwrap();
+        viewport(page, width, 844).await;
+        for (when, hidden) in [("before", true), ("after", false)] {
+            eval::<bool>(
+                page,
+                &format!(
+                    "(() => {{ document.querySelector('.files').style.display = '{}'; window.scrollTo(0, 0); return true; }})()",
+                    if hidden { "none" } else { "" }
+                ),
+            )
+            .await;
+            screenshot(page, &format!("files-top-{when}-{width}-{scheme}.png")).await;
+        }
+    }
+    page.execute(SetEmulatedMediaParams::builder().build())
+        .await
+        .unwrap();
+    viewport(page, 390, 844).await;
 }
