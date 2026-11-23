@@ -157,7 +157,7 @@ pub fn render(
                 .collect();
             let changed = changed_in_latest(d);
             let lines: Vec<LineView> = highlighter
-                .lines_cached(&d.id, d.version, &d.path, d.kind, &d.text)
+                .lines_cached(&d.id, d.version_id, &d.path, d.kind, &d.text)
                 .iter()
                 .enumerate()
                 .map(|(i, html)| {

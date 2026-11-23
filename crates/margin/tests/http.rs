@@ -1121,7 +1121,6 @@ async fn columns_after_a_tab_and_an_emoji_count_one_each() {
     assert_eq!(texts, ["\u{1F642}", "word"]);
 }
 
-
 fn numbered(lines: impl IntoIterator<Item = String>) -> String {
     lines.into_iter().map(|l| format!("{l}\n")).collect()
 }
