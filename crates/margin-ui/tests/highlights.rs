@@ -3,27 +3,22 @@
 //! `MARGIN_CHROMIUM` is unset. Waits are on signals from the page, never on elapsed time.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chromiumoxide::browser::Browser;
 use chromiumoxide::cdp::browser_protocol::emulation::{
     SetDeviceMetricsOverrideParams, SetTouchEmulationEnabledParams,
 };
+use chromiumoxide::cdp::browser_protocol::input::{
+    DispatchMouseEventParams, DispatchMouseEventType, DispatchTouchEventParams,
+    DispatchTouchEventType, MouseButton, TouchPoint,
+};
 use chromiumoxide::page::{Page, ScreenshotParams};
-use margin::agents::OsRng;
-use margin::api::{AppState, router};
-use margin::config::Config;
-use margin::db::Db;
-use margin::highlight::Highlighter;
-use margin::metrics::Metrics;
-use margin::store::{Kind, NewCollection, NewDocument};
-use margin_core::SystemClock;
 use margin_test_id::test_id;
 
 mod support;
 
-const FIXTURE: &str = include_str!("../fixtures/long.rs");
+const FIXTURE: &str = support::FIXTURE;
 const PHONE: u32 = 390;
 const HEIGHT: u32 = 844;
 const SIGNAL_DEADLINE: Duration = Duration::from_secs(20);
@@ -35,58 +30,8 @@ struct Rig {
     _dir: tempfile::TempDir,
 }
 
-async fn serve() -> (String, tempfile::TempDir) {
-    let dir = tempfile::tempdir().unwrap();
-    let agents = dir.path().join("agents.toml");
-    std::fs::write(&agents, "").unwrap();
-    let config = Config::parse(&format!(
-        "listen = \"127.0.0.1:0\"\nbase_url = \"http://127.0.0.1\"\ndatabase = \"{}\"\nagents_file = \"{}\"\notlp_endpoint = \"http://127.0.0.1:1\"\ninstance = \"test\"\n",
-        dir.path().join("m.db").display(),
-        agents.display()
-    ))
-    .unwrap();
-    let state = AppState {
-        db: Db::open(&config.database).unwrap(),
-        config: Arc::new(config),
-        clock: Arc::new(SystemClock),
-        rng: Arc::new(OsRng),
-        metrics: Metrics::detached(),
-        highlighter: Arc::new(Highlighter::new()),
-    };
-    state
-        .db
-        .call(|conn| {
-            let docs = vec![(
-                "d1".to_string(),
-                NewDocument {
-                    path: "long.rs".into(),
-                    kind: Kind::Code,
-                    text: FIXTURE.to_string(),
-                },
-            )];
-            margin::store::create(
-                conn,
-                &NewCollection {
-                    id: "fixture",
-                    title: "Fixture",
-                    cover_note: "A long file.",
-                    created_by: "ui",
-                    now: 0,
-                    documents: &docs,
-                },
-            )
-        })
-        .await
-        .unwrap()
-        .unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}/c/fixture", listener.local_addr().unwrap());
-    tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
-    (url, dir)
-}
-
 async fn rig() -> Rig {
-    let (url, dir) = serve().await;
+    let (url, dir) = support::serve().await;
     let (browser, pump) = support::launch(dir.path()).await;
     let page = browser.new_page("about:blank").await.unwrap();
     viewport(&page, PHONE, HEIGHT, true).await;
@@ -488,5 +433,116 @@ async fn commenting_on_words_keeps_the_text_of_other_open_boxes() {
     )
     .await;
     assert_eq!(texts, ["ten", "words", ""]);
+    rig.close().await;
+}
+
+/// `touchEnd` must carry `"touchPoints": []`: CDP makes the key mandatory, and
+/// `DispatchTouchEventParams` omits it when empty.
+#[derive(serde::Serialize)]
+struct EndTouch {
+    #[serde(rename = "type")]
+    kind: DispatchTouchEventType,
+    #[serde(rename = "touchPoints")]
+    touch_points: Vec<TouchPoint>,
+}
+
+impl chromiumoxide::Method for EndTouch {
+    fn identifier(&self) -> chromiumoxide::types::MethodId {
+        "Input.dispatchTouchEvent".into()
+    }
+}
+
+impl chromiumoxide::Command for EndTouch {
+    type Response = chromiumoxide::cdp::browser_protocol::input::DispatchTouchEventReturns;
+}
+
+/// Select words, wait for the Comment button, and return the centre of the button.
+async fn button_centre(page: &Page) -> (f64, f64) {
+    select(page, 10, 3, 11, 10).await;
+    wait_for(
+        page,
+        "the Comment button showed",
+        "(() => { const b = document.getElementById('hl-comment'); return b && !b.hidden; })()",
+    )
+    .await;
+    eval(
+        page,
+        "(() => { const r = document.getElementById('hl-comment').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()",
+    )
+    .await
+}
+
+async fn box_has_the_selection_columns(page: &Page) {
+    wait_for(
+        page,
+        "the box opened with columns",
+        "document.querySelector('.newbox[data-start-col]')",
+    )
+    .await;
+    let anchor: (String, String, String, String) = eval(
+        page,
+        "(() => { const f = document.querySelector('.newbox'); return [f.dataset.first, f.dataset.last, f.dataset.startCol, f.dataset.endCol]; })()",
+    )
+    .await;
+    assert_eq!(
+        anchor,
+        (
+            "10".to_string(),
+            "11".to_string(),
+            "3".to_string(),
+            "10".to_string()
+        )
+    );
+}
+
+#[test_id(tsxwr2k)]
+#[tokio::test]
+#[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
+async fn pressing_the_comment_button_with_the_mouse_opens_the_box_with_columns() {
+    let rig = rig().await;
+    let page = &rig.page;
+    let (x, y) = button_centre(page).await;
+    for (kind, buttons) in [
+        (DispatchMouseEventType::MouseMoved, None),
+        (
+            DispatchMouseEventType::MousePressed,
+            Some(MouseButton::Left),
+        ),
+        (
+            DispatchMouseEventType::MouseReleased,
+            Some(MouseButton::Left),
+        ),
+    ] {
+        let mut params = DispatchMouseEventParams::new(kind, x, y);
+        if let Some(button) = buttons {
+            params.button = Some(button);
+            params.click_count = Some(1);
+        }
+        page.execute(params).await.unwrap();
+    }
+    box_has_the_selection_columns(page).await;
+    rig.close().await;
+}
+
+#[test_id(t4hpn6e)]
+#[tokio::test]
+#[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
+async fn tapping_the_comment_button_with_touch_opens_the_box_with_columns() {
+    let rig = rig().await;
+    let page = &rig.page;
+    let (x, y) = button_centre(page).await;
+    page.execute(DispatchTouchEventParams::new(
+        DispatchTouchEventType::TouchStart,
+        vec![TouchPoint::new(x, y)],
+    ))
+    .await
+    .unwrap();
+    page.execute(EndTouch {
+        kind: DispatchTouchEventType::TouchEnd,
+        touch_points: Vec::new(),
+    })
+    .await
+    .unwrap();
+    box_has_the_selection_columns(page).await;
     rig.close().await;
 }
