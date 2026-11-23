@@ -254,8 +254,14 @@
         m.remove();
       });
       var rows = rowsOf(lines);
+      lines.querySelectorAll('.ln[style*="--lanes"]').forEach(function (r) {
+        r.style.removeProperty('--lanes');
+      });
       list.forEach(function (m) {
         for (var n = m.first; n <= m.last; n++) {
+          if (m.lane + 1 > 4 && m.lane + 1 > Number(rows[n - 1].style.getPropertyValue('--lanes') || 0)) {
+            rows[n - 1].style.setProperty('--lanes', m.lane + 1);
+          }
           var mark = document.createElement('span');
           mark.className = 'mark';
           mark.setAttribute('data-thread', m.thread);

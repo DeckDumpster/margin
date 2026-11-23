@@ -574,6 +574,239 @@ async fn three_overlapping_threads_open_keep_the_phone_page_inside_390px() {
     rig.close().await;
 }
 
+/// Make `n` single-line threads on line 17 by `fetch`; returns how many were accepted.
+async fn fetch_threads_on_17(page: &Page, n: u32) -> u32 {
+    eval(
+        page,
+        &format!(
+            r#"(async () => {{
+              const version = Number(document.querySelector('.lines').dataset.version);
+              let made = 0;
+              for (let k = 0; k < {n}; k++) {{
+                const res = await fetch('/c/fixture/threads', {{ method: 'POST',
+                  headers: {{ 'content-type': 'application/json' }},
+                  body: JSON.stringify({{ version_id: version, first_line: 17, last_line: 17, body: 'comment ' + k }}) }});
+                if (res.ok) made += 1;
+              }}
+              return made;
+            }})()"#
+        ),
+    )
+    .await
+}
+
+async fn reload(page: &Page) {
+    page.reload()
+        .await
+        .unwrap()
+        .wait_for_navigation()
+        .await
+        .unwrap();
+}
+
+/// Boxes of the marks on line 17, the gutter's box, and the code's box.
+#[derive(Debug, serde::Deserialize)]
+struct Boxes {
+    marks: Vec<[f64; 4]>,
+    gut: [f64; 4],
+    code_left: f64,
+    gut_width: f64,
+}
+
+async fn boxes_on_17(page: &Page) -> Boxes {
+    eval(
+        page,
+        r#"(() => {
+          const row = document.querySelector('[data-line="17"]');
+          const b = (el) => { const r = el.getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; };
+          const g = row.querySelector('.gut').getBoundingClientRect();
+          return { marks: [...row.querySelectorAll('.mark')].map(b), gut: b(row.querySelector('.gut')),
+                   code_left: row.querySelector('.code').getBoundingClientRect().left, gut_width: g.width };
+        })()"#,
+    )
+    .await
+}
+
+fn assert_marks_disjoint_in_gutter(b: &Boxes, count: usize, what: &str) {
+    assert_eq!(b.marks.len(), count, "{what}: {b:?}");
+    for (i, m) in b.marks.iter().enumerate() {
+        assert!(m[2] - m[0] > 0.0, "{what}: mark {i} has no width: {b:?}");
+        assert!(
+            m[0] >= b.gut[0] - 0.01 && m[2] <= b.gut[2] + 0.01,
+            "{what}: mark {i} outside the gutter: {b:?}"
+        );
+        for (j, o) in b.marks.iter().enumerate().skip(i + 1) {
+            assert!(
+                m[2] <= o[0] + 0.01 || o[2] <= m[0] + 0.01,
+                "{what}: marks {i} and {j} overlap: {b:?}"
+            );
+        }
+    }
+    assert!(
+        b.gut[2] <= b.code_left + 0.01,
+        "{what}: gutter right of code: {b:?}"
+    );
+}
+
+#[test_id(t23vk4f)]
+#[tokio::test]
+#[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
+async fn every_thread_on_a_line_has_its_own_mark_that_opens_it_however_many_cover_the_line() {
+    let rig = rig().await;
+    let page = &rig.page;
+    assert_eq!(fetch_threads_on_17(page, 4).await, 4);
+    reload(page).await;
+
+    // 1. The fifth arrives by a tap on number 17 and the box's Post.
+    let (x, y) = number_of(page, 17).await;
+    touch(page, DispatchTouchEventType::TouchStart, Some((x, y)), None).await;
+    touch(page, DispatchTouchEventType::TouchEnd, None, None).await;
+    wait_for(
+        page,
+        "the new-comment box",
+        "document.querySelector('.newbox')",
+    )
+    .await;
+    post_from_box(page, "the fifth").await;
+    wait_for(
+        page,
+        "five marks on line 17",
+        "document.querySelectorAll('[data-line=\"17\"] .mark').length === 5",
+    )
+    .await;
+    number_of(page, 17).await;
+    let live = boxes_on_17(page).await;
+    assert_marks_disjoint_in_gutter(&live, 5, "after the post");
+    for _ in 0..2 {
+        reload(page).await;
+        number_of(page, 17).await;
+        let b = boxes_on_17(page).await;
+        assert_marks_disjoint_in_gutter(&b, 5, "after a reload");
+    }
+    screenshot(page, "lanes-390.png").await;
+
+    // 2. A tap at the centre of each mark opens its own thread and no other.
+    let ids: Vec<String> = eval(
+        page,
+        "[...document.querySelectorAll('[data-line=\"17\"] .mark')].map((m) => m.dataset.thread)",
+    )
+    .await;
+    assert_eq!(ids.len(), 5);
+    eval::<bool>(
+        page,
+        "(() => { document.querySelectorAll('.thread').forEach((t) => { t.hidden = true; }); return true; })()",
+    )
+    .await;
+    for (k, id) in ids.iter().enumerate() {
+        let (cx, cy): (f64, f64) = eval(
+            page,
+            &format!(
+                "(() => {{ const m = document.querySelectorAll('[data-line=\"17\"] .mark')[{k}];
+                  m.scrollIntoView({{block: 'center'}});
+                  const r = m.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"
+            ),
+        )
+        .await;
+        touch(
+            page,
+            DispatchTouchEventType::TouchStart,
+            Some((cx, cy)),
+            None,
+        )
+        .await;
+        touch(page, DispatchTouchEventType::TouchEnd, None, None).await;
+        wait_for(
+            page,
+            "the tapped thread opens",
+            &format!("!document.getElementById('thread-{id}').hidden"),
+        )
+        .await;
+        let open: Vec<String> = eval(
+            page,
+            "[...document.querySelectorAll('.thread:not([hidden])')].map((t) => t.id)",
+        )
+        .await;
+        assert_eq!(open, [format!("thread-{id}")], "tap on mark {k}");
+        eval::<bool>(
+            page,
+            &format!(
+                "(() => {{ document.getElementById('thread-{id}').hidden = true; return true; }})()"
+            ),
+        )
+        .await;
+    }
+
+    // 3. Deleting one on the open page leaves four marks and a 22px gutter.
+    let code18_before = code18_left(page).await;
+    let last = ids.last().unwrap();
+    eval::<bool>(
+        page,
+        &format!(
+            "(() => {{ const t = document.getElementById('thread-{last}'); t.hidden = false;
+              t.querySelector('button[data-act=delete]').click(); return true; }})()"
+        ),
+    )
+    .await;
+    wait_for(
+        page,
+        "four marks on line 17",
+        "document.querySelectorAll('[data-line=\"17\"] .mark').length === 4",
+    )
+    .await;
+    number_of(page, 17).await;
+    let four = boxes_on_17(page).await;
+    assert!(
+        (four.gut_width - 22.0).abs() < 0.01,
+        "gutter after delete: {four:?}"
+    );
+    assert_marks_disjoint_in_gutter(&four, 4, "after the delete");
+    let gut18: f64 = eval(
+        page,
+        "document.querySelector('[data-line=\"18\"] .gut').getBoundingClientRect().width",
+    )
+    .await;
+    assert!((gut18 - 22.0).abs() < 0.01, "line 18 gutter {gut18}");
+    assert_eq!(code18_left(page).await, code18_before, "line 18 moved");
+    rig.close().await;
+}
+
+/// Line 18's code left edge, relative to the frame's own content (scroll-independent).
+async fn code18_left(page: &Page) -> f64 {
+    eval(
+        page,
+        "document.querySelector('[data-line=\"18\"] .code').getBoundingClientRect().left",
+    )
+    .await
+}
+
+#[test_id(trrdqnz)]
+#[tokio::test]
+#[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
+async fn twelve_threads_on_a_line_keep_disjoint_marks_and_the_phone_page_inside_390px() {
+    let rig = rig().await;
+    let page = &rig.page;
+    assert_eq!(fetch_threads_on_17(page, 12).await, 12);
+    reload(page).await;
+    number_of(page, 17).await;
+    let b = boxes_on_17(page).await;
+    assert_marks_disjoint_in_gutter(&b, 12, "twelve threads");
+    let w: Widths = eval(page, MEASURE).await;
+    assert!(w.page_scroll_width <= PHONE, "page scrolls sideways: {w:?}");
+    assert!(w.outside_frame_overflow.is_empty(), "{w:?}");
+    assert!(w.any_overflow.is_empty(), "elements past {PHONE}px: {w:?}");
+    eval::<bool>(
+        page,
+        "(() => { document.getElementById('wrap-toggle').click(); return true; })()",
+    )
+    .await;
+    let off: Widths = eval(page, MEASURE).await;
+    assert!(off.page_scroll_width <= PHONE, "wrap off: {off:?}");
+    assert!(off.outside_frame_overflow.is_empty(), "wrap off: {off:?}");
+    viewport(page, 1280, 900, false).await;
+    screenshot(page, "lanes-1280.png").await;
+    rig.close().await;
+}
+
 async fn tap_number(page: &Page, n: u32) {
     let (x, y) = number_of(page, n).await;
     touch(page, DispatchTouchEventType::TouchStart, Some((x, y)), None).await;

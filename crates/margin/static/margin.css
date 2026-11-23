@@ -67,7 +67,8 @@ body {
 .frame { overflow-x: auto; max-width: 100%; border: 1px solid var(--rule); border-radius: 0.4rem; }
 .lines { font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 4; padding: 0.25rem 0; }
 .ln { display: grid; grid-template-columns: calc(var(--nw) * 1ch + 1.5ch) var(--gut) minmax(0, 1fr); }
-.lines { --gut: 22px; }
+/* Room for four lanes; a row with more lanes sets --lanes and its gutter grows alone. */
+.ln { --gut: calc(max(var(--lanes, 4), 4) * 5px + 2px); }
 .no {
   position: sticky;
   left: 0;
@@ -83,7 +84,7 @@ body {
 .ln.sel .no, .ln.sel .gut, .ln.sel .code { background: color-mix(in srgb, var(--accent) 22%, var(--bg)); }
 body[data-gesture] { -webkit-user-select: none; user-select: none; }
 
-/* The margin: a fixed-width gutter, one 4px bar per thread at its lane (lanes past 3 share the last). */
+/* The margin: a fixed-width gutter, one 4px bar per thread at its lane (lanes past 2 share one colour); the gutter is 5px per lane + 2px, 22px up to four lanes. */
 .gut {
   position: sticky;
   left: calc(var(--nw) * 1ch + 1.5ch);
@@ -93,7 +94,7 @@ body[data-gesture] { -webkit-user-select: none; user-select: none; }
   position: absolute;
   top: 0;
   bottom: 0;
-  left: calc(min(var(--lane), 3) * 5px + 1px);
+  left: calc(var(--lane) * 5px + 1px);
   width: 4px;
   background: var(--l3);
   opacity: 0.85;

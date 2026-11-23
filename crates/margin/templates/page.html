@@ -18,7 +18,7 @@
 {% for doc in docs %}<section class="doc" id="doc-{{ loop.index }}">
 <h2 class="path">{{ doc.path }} <span class="version">version {{ doc.version }}</span></h2>
 <div class="frame"><div class="lines" style="--nw:{{ doc.digits }}" data-version="{{ doc.version_id }}">
-{% for line in doc.lines %}<div class="ln{% if line.changed %} changed{% endif %}" data-line="{{ line.n }}"><span class="no">{{ line.n }}</span><span class="gut">{% for m in line.marks %}<span class="mark" data-thread="{{ m.thread }}" data-lane="{{ m.lane }}" style="--lane:{{ m.lane }}"></span>{% endfor %}</span><span class="code">{{ line.html|safe }}</span></div>
+{% for line in doc.lines %}<div class="ln{% if line.changed %} changed{% endif %}" data-line="{{ line.n }}"{% if line.lanes > 4 %} style="--lanes:{{ line.lanes }}"{% endif %}><span class="no">{{ line.n }}</span><span class="gut">{% for m in line.marks %}<span class="mark" data-thread="{{ m.thread }}" data-lane="{{ m.lane }}" style="--lane:{{ m.lane }}"></span>{% endfor %}</span><span class="code">{{ line.html|safe }}</span></div>
 {% for thread in line.threads %}{% include "thread.html" %}{% endfor %}
 {% endfor %}</div></div>
 </section>
