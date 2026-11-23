@@ -59,7 +59,22 @@ body {
   border-radius: 0.4rem;
 }
 .meta { color: var(--dim); margin: 0.25rem 0 0.75rem; }
-.cover { white-space: pre-wrap; margin: 0 0 1rem; padding: 0.5rem 0.75rem; border-left: 3px solid var(--rule); }
+.cover { margin: 0 0 1rem; padding: 0.5rem 0.75rem; border-left: 3px solid var(--rule); }
+.cover > :first-child { margin-top: 0; }
+.cover > :last-child { margin-bottom: 0; }
+.cover p, .cover ul, .cover ol, .cover pre, .cover table { margin: 0 0 0.6rem; }
+.cover h1, .cover h2, .cover h3, .cover h4, .cover h5, .cover h6 { margin: 0.8rem 0 0.35rem; font-size: 1.1rem; line-height: 1.3; }
+.cover h1 { font-size: 1.2rem; }
+.cover h4, .cover h5, .cover h6 { font-size: 1rem; }
+.cover ul, .cover ol { padding-left: 1.4rem; }
+.cover ul ul, .cover ul ol, .cover ol ul, .cover ol ol { margin-bottom: 0; }
+.cover code { font: 0.9em ui-monospace, SFMono-Regular, Menlo, monospace; padding: 0.1em 0.3em; border-radius: 0.25rem; background: color-mix(in srgb, var(--dim) 18%, var(--bg)); overflow-wrap: anywhere; }
+.cover pre { padding: 0.5rem 0.6rem; border: 1px solid var(--rule); border-radius: 0.4rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cover pre code { padding: 0; background: none; font-size: 0.85rem; }
+.cover a { color: var(--accent); }
+.cover table { max-width: 100%; border-collapse: collapse; table-layout: fixed; width: 100%; }
+.cover th, .cover td { border: 1px solid var(--rule); padding: 0.25rem 0.5rem; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+.cover th { background: color-mix(in srgb, var(--dim) 12%, var(--bg)); }
 .doc { margin: 0 0 1.5rem; min-width: 0; }
 .path { font: 600 0.95rem/1.3 ui-monospace, monospace; margin: 0 0 0.35rem; }
 

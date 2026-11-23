@@ -232,6 +232,29 @@ async fn prose_is_shown_as_its_markdown_source() {
     assert!(!html.contains("<b>"), "prose is escaped, never rendered");
 }
 
+#[test_id(tqqaqnm)]
+#[tokio::test]
+async fn the_cover_note_is_served_as_markdown_with_its_raw_html_escaped() {
+    let h = harness();
+    let (_, body) = send(
+        &h.app,
+        Method::POST,
+        "/api/collections",
+        Some(TOKEN),
+        Some(json!({"title": "d", "cover_note": "## Head\n\nsee <b>this</b>", "documents": [doc("a.rs", "x")]})),
+    )
+    .await;
+    let id = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, html) = send(&h.app, Method::GET, &format!("/c/{id}"), None, None).await;
+    let cover = html.split("<section class=\"cover\">").nth(1).unwrap();
+    let cover = cover.split("</section>").next().unwrap();
+    assert!(cover.contains("<h2>Head</h2>"), "{cover}");
+    assert!(cover.contains("&lt;b&gt;") && !cover.contains("<b>"), "{cover}");
+}
+
 #[test_id(t3hmmb3)]
 #[tokio::test]
 async fn collections_support_create_read_update_delete_and_list() {

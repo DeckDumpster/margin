@@ -89,6 +89,10 @@ async fn screenshot(page: &Page, name: &str) {
 }
 
 async fn serve() -> (String, tempfile::TempDir) {
+    serve_with_cover("A long file.").await
+}
+
+async fn serve_with_cover(cover: &str) -> (String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let agents = dir.path().join("agents.toml");
     std::fs::write(&agents, "").unwrap();
@@ -122,7 +126,7 @@ async fn serve() -> (String, tempfile::TempDir) {
                 &NewCollection {
                     id: "fixture",
                     title: "Fixture",
-                    cover_note: "A long file.",
+                    cover_note: cover,
                     created_by: "ui",
                     now: 0,
                     documents: &docs,
@@ -309,4 +313,40 @@ async fn code_tokens_have_their_lines_font_and_no_margin_whatever_their_scope() 
     browser.close().await.unwrap();
     let _ = pump.await;
     browser.wait().await.unwrap();
+}
+
+#[test_id(tvngowa)]
+#[tokio::test]
+#[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
+async fn a_cover_note_with_wide_code_and_a_table_never_scrolls_sideways_on_a_phone() {
+    let span = "x".repeat(120);
+    let block = "y".repeat(160);
+    let cover = format!(
+        "## Head\n\nA `{span}` span.\n\n```\n{block}\n```\n\n| first column | second column | third column | fourth column |\n|---|---|---|---|\n| aaaaaaaaaaaaaaaa | bbbbbbbbbbbbbbbb | cccccccccccccccc | dddddddddddddddd |\n"
+    );
+    let (url, dir) = serve_with_cover(&cover).await;
+    let (mut browser, pump) = support::launch(dir.path()).await;
+    let page = browser.new_page("about:blank").await.unwrap();
+    viewport(&page, PHONE, 844, true).await;
+    page.goto(&url).await.unwrap().wait_for_navigation().await.unwrap();
+    let over: Vec<String> = page
+        .evaluate(
+            "[...document.querySelectorAll('.cover, .cover *')].filter(e => e.getBoundingClientRect().right > 390.5).map(e => e.tagName)",
+        )
+        .await
+        .unwrap()
+        .into_value()
+        .unwrap();
+    let tables: u32 = page
+        .evaluate("document.querySelectorAll('.cover table').length")
+        .await
+        .unwrap()
+        .into_value()
+        .unwrap();
+    assert_eq!(tables, 1);
+    assert!(over.is_empty(), "past the viewport: {over:?}");
+    let sw: u32 = page.evaluate("document.documentElement.scrollWidth").await.unwrap().into_value().unwrap();
+    assert!(sw <= PHONE, "page scrolls sideways: {sw}");
+    browser.close().await.unwrap();
+    let _ = pump.await;
 }

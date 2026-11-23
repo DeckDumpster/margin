@@ -94,7 +94,7 @@ pub struct Page {
     pub can_publish: bool,
     /// The newest change this page shows; its feed asks for what came after.
     pub seq: i64,
-    pub cover_note: String,
+    pub cover_html: String,
     pub docs: Vec<DocView>,
 }
 
@@ -201,7 +201,7 @@ pub fn render(
         state: c.state.as_str(),
         can_publish: c.state != crate::store::State::Closed,
         seq,
-        cover_note: c.cover_note.clone(),
+        cover_html: crate::markdown::html(&c.cover_note),
         docs,
     }
     .render()

@@ -14,7 +14,7 @@
 <button type="button" id="publish"{% if !can_publish %} hidden{% endif %}>Publish</button>
 </header>
 <p class="meta">{{ state }} · {{ docs.len() }} document{% if docs.len() != 1 %}s{% endif %}</p>
-{% if !cover_note.is_empty() %}<section class="cover">{{ cover_note }}</section>{% endif %}
+{% if !cover_html.is_empty() %}<section class="cover">{{ cover_html|safe }}</section>{% endif %}
 {% for doc in docs %}<section class="doc" id="doc-{{ loop.index }}">
 <h2 class="path">{{ doc.path }} <span class="version">version {{ doc.version }}</span></h2>
 <div class="frame"><div class="lines" style="--nw:{{ doc.digits }}" data-version="{{ doc.version_id }}">

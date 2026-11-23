@@ -20,6 +20,7 @@ opentelemetry-proto = { version = "0.30", default-features = false, features = [
 prost = "0.13"
 ureq = { version = "3", default-features = false }
 flate2 = "1"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 tempfile = "3"
 
 [dev-dependencies]

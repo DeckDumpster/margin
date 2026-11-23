@@ -890,7 +890,7 @@
       if (meta && fmeta) meta.textContent = fmeta.textContent;
       var cover = document.querySelector('.cover');
       var fcover = page.querySelector('.cover');
-      if (fcover && cover) cover.textContent = fcover.textContent;
+      if (fcover && cover) cover.replaceChildren.apply(cover, Array.prototype.map.call(fcover.childNodes, function (n) { return document.importNode(n, true); }));
       else if (fcover) (meta || document.querySelector('header.top')).after(document.importNode(fcover, true));
       else if (cover) cover.remove();
       if (publish) {

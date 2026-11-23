@@ -666,6 +666,26 @@ async fn a_new_cover_note_shows_and_keeps_the_draft() {
     rig.close().await;
 }
 
+#[test_id(tng0ttl)]
+#[tokio::test]
+#[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
+async fn a_markdown_cover_note_shows_formatted_without_a_reload() {
+    let rig = rig().await;
+    let page = &rig.page;
+    eval::<bool>(page, "(window.__still_here = true)").await;
+    let (status, got) = rig
+        .agent(
+            "PATCH",
+            "/api/collections/live",
+            json!({"cover_note": "## Heading\n\n- one\n- two"}),
+        )
+        .await;
+    assert_eq!(status, 200, "{got}");
+    wait_for(page, "the formatted cover", "document.querySelector('.cover h2') && document.querySelectorAll('.cover li').length === 2").await;
+    assert!(eval::<bool>(page, "window.__still_here === true").await);
+    rig.close().await;
+}
+
 #[test_id(trpolbp)]
 #[tokio::test]
 #[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
