@@ -47,7 +47,8 @@ body {
 }
 .top { display: flex; align-items: center; gap: 0.75rem; }
 .title { flex: 1 1 0; min-width: 0; margin: 0; font-size: 1.25rem; }
-#wrap-toggle {
+#wrap-toggle,
+#publish {
   flex: none;
   min-height: 2.75rem;
   padding: 0 0.9rem;
@@ -161,3 +162,6 @@ html:not(.nowrap) .code {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 #hl-comment[hidden] { display: none; }
+
+#publish { border-color: currentColor; font-weight: 600; }
+#publish[hidden] { display: none; }
