@@ -181,6 +181,25 @@ mod tests {
 
     #[test_id(tqe92v8)]
     #[test]
+    fn a_rewritten_highlight_falls_back_to_the_new_lines_between_its_neighbours() {
+        let hl = |first, last| Anchor {
+            first,
+            last,
+            cols: Some((0, 1)),
+        };
+        // Three old lines rewritten as five: the fallback is as long as the old range.
+        let c = run("a\nb\nc\nd\ne", "a\n1\n2\n3\n4\ne", hl(2, 4));
+        assert_eq!(c, Carried::TextChanged(Anchor::lines(2, 4)));
+        // Three old lines rewritten as one: the fallback is that one line.
+        let c = run("a\nb\nc\nd\ne", "a\n1\ne", hl(2, 4));
+        assert_eq!(c, Carried::TextChanged(Anchor::lines(2, 2)));
+        // Deleted outright, no new text between its neighbours: the thread is removed.
+        let c = run("a\nb\nc", "a\nc", hl(2, 2));
+        assert_eq!(c, Carried::Removed { at: 1 });
+    }
+
+    #[test_id(tbz9reb)]
+    #[test]
     fn duplicate_identical_lines_map_in_order() {
         let map = line_map(&["x", "x", "x"], &["x", "x", "x", "x"]);
         assert_eq!(map, [Some(1), Some(2), Some(3)]);

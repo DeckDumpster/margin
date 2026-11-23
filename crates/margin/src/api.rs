@@ -933,7 +933,8 @@ struct VersionMarks {
 #[derive(Serialize)]
 struct PageFeed {
     last_seq: i64,
-    /// A version arrived: the page shows the newest, so it reloads.
+    /// A version arrived or went, or the collection changed: the page shows the newest version,
+    /// so it reloads.
     reload: bool,
     state: String,
     /// Threads to put on the page, each replacing the one it has there or going in after its
@@ -973,7 +974,10 @@ fn look(
         last_seq: batch.last_seq,
         state,
         changed: !batch.rows.is_empty(),
-        reload: batch.rows.iter().any(|r| r.kind == "version_created"),
+        reload: batch
+            .rows
+            .iter()
+            .any(|r| r.kind == "version_created" || r.kind == "collection_updated"),
         threads: Vec::new(),
         gone: Vec::new(),
         marks: Vec::new(),

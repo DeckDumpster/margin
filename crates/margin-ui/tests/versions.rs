@@ -141,6 +141,8 @@ struct Seen {
     version_label: String,
     changed_lines: Vec<u32>,
     labels: Vec<(String, u32)>,
+    /// The line the carried thread sits under, which has no label.
+    carried_line: u32,
     page_scroll_width: u32,
     any_overflow: Vec<String>,
 }
@@ -156,10 +158,15 @@ fn measure(width: u32) -> String {
     const line = row.matches('.ln') ? row : row.previousElementSibling;
     return [el.textContent, Number(line.dataset.line)];
   }});
+  const carried = document.querySelector('#thread-t-carried');
+  const above = carried.previousElementSibling;
+  const carriedLine = above.matches('.ln') ? above : above.previousElementSibling;
+  if (carried.querySelector('.carry')) throw new Error('the carried thread has a label');
   return {{
     version_label: document.querySelector('.version').textContent,
     changed_lines: [...document.querySelectorAll('.ln.changed')].map((el) => Number(el.dataset.line)),
     labels,
+    carried_line: Number(carriedLine.dataset.line),
     page_scroll_width: document.documentElement.scrollWidth,
     any_overflow: all.filter(over).slice(0, 5).map((el) => el.tagName + '.' + el.className),
   }};

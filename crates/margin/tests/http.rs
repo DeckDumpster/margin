@@ -1330,14 +1330,19 @@ async fn versions_are_listed_read_and_only_the_latest_beyond_one_may_be_deleted(
     new_thread(&h, &id, version, 2, 2, "stay").await;
     let doc_id = document_id(&h, &id).await;
     let base = format!("/api/documents/{doc_id}/versions");
-    post_version(&h, &doc_id, Some(TOKEN), "a\nline 2\n").await;
+    post_version(&h, &doc_id, Some(TOKEN), "x\na\nline 2\n").await;
+    let page2 = reader_page(&h, &id).await;
+    assert!(
+        row_and_threads(&page2, 3).contains("stay"),
+        "carried down to line 3"
+    );
     let (s, body) = send(&h.app, Method::GET, &base, None, None).await;
     assert_eq!(s, StatusCode::OK);
     let list: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(list["items"].as_array().unwrap().len(), 2, "{body}");
     let (s, body) = send(&h.app, Method::GET, &format!("{base}/2"), None, None).await;
     assert_eq!(
-        (s, body.contains("a\\nline 2")),
+        (s, body.contains("x\\na\\nline 2")),
         (StatusCode::OK, true),
         "{body}"
     );
@@ -1373,4 +1378,25 @@ async fn versions_are_listed_read_and_only_the_latest_beyond_one_may_be_deleted(
         html.contains("version 1") && row_and_threads(&html, 2).contains("stay"),
         "{html}"
     );
+}
+
+#[test_id(tgkts4q)]
+#[tokio::test]
+async fn a_version_with_a_thread_started_on_it_is_not_deleted() {
+    let h = harness();
+    let (id, _) = small_collection(&h, 4).await;
+    let doc_id = document_id(&h, &id).await;
+    let (_, v2) = post_version(&h, &doc_id, Some(TOKEN), "a\nb\n").await;
+    let (s, _, _) = new_thread(&h, &id, v2["id"].as_i64().unwrap(), 1, 1, "fresh").await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, _) = send(
+        &h.app,
+        Method::DELETE,
+        &format!("/api/documents/{doc_id}/versions/2"),
+        Some(TOKEN),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert!(reader_page(&h, &id).await.contains("fresh"));
 }
