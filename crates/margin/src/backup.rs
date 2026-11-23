@@ -464,7 +464,7 @@ fn read_everything(conn: &mut Connection) -> rusqlite::Result<DrillReport> {
                 .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
             report.collections += 1;
             report.documents += collection.documents.len();
-            let all = threads::all(conn, &summary.id)?;
+            let all = threads::all(conn, threads::Scope::Agent, &summary.id)?;
             report.threads += all.len();
             report.comments += all.iter().map(|t| t.comments.len()).sum::<usize>();
         }
@@ -479,7 +479,7 @@ fn read_everything(conn: &mut Connection) -> rusqlite::Result<DrillReport> {
 mod tests {
     use super::*;
     use crate::store::{Kind, NewCollection, NewDocument};
-    use crate::threads::NewThread;
+    use crate::threads::{NewThread, Visibility};
     use margin_core::anchor::Anchor;
     use margin_test_id::test_id;
     use std::collections::BTreeMap;
@@ -611,6 +611,8 @@ mod tests {
                 collection_id: &cid,
                 version_id,
                 anchor: Anchor::lines(1, 2),
+                author: threads::READER,
+                visibility: Visibility::Now,
                 body: "first",
                 now: T0 + 1,
             },
@@ -623,6 +625,8 @@ mod tests {
                 &tid,
                 &format!("m{n}-{t}-{}", r + 1),
                 "agent",
+                // Held replies are the reader's record too: the drill must count them.
+                Visibility::Held,
                 "reply",
                 T0 + 2,
             )
