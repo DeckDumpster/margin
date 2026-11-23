@@ -13,7 +13,18 @@ jobs:
     container: docker.io/library/rust:1.99.1-bookworm
     steps:
       - uses: actions/checkout@v4
+      # A push to main comes from the landing queue, which lands only a commit whose gate passed
+      # locally on that exact tree; the push builds and ships it and does not test it again.
       - run: bash gate.sh
+        if: github.event_name != 'push'
+      - uses: actions/cache@v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          path: |
+            /usr/local/cargo/registry
+            /usr/local/cargo/git
+            target
+          key: release-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
       - name: Build the release binary
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
