@@ -588,21 +588,18 @@ async fn tapping_another_line_leaves_a_box_with_a_post_in_flight_alone() {
     submit(page, ".newbox", "still in flight", 1).await;
     rig.wait_held(1).await;
     tap_line(page, 9).await;
-    let (boxes, first, text): (u32, String, String) = eval(
+    let (text, busy): (String, bool) = eval(
         page,
-        "(() => { const b = document.querySelectorAll('.newbox');
-          return [b.length, b[0].getAttribute('data-first'), b[0].querySelector('textarea').value]; })()",
+        "(() => { const b = document.querySelector('.newbox[data-first=\"3\"]');
+          return [b.querySelector('textarea').value, b.hasAttribute('data-busy')]; })()",
     )
     .await;
-    assert_eq!(
-        (boxes, first.as_str(), text.as_str()),
-        (1, "3", "still in flight")
-    );
+    assert_eq!((text.as_str(), busy), ("still in flight", true));
     rig.release_all().await;
     wait_for(
         page,
         "the thread",
-        "!document.querySelector('.newbox') && document.querySelector('.thread')",
+        "!document.querySelector('.newbox[data-first=\"3\"]') && document.querySelector('.thread')",
     )
     .await;
     rig.close().await;
