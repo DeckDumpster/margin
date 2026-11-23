@@ -40,7 +40,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -o DPkg::Lock::Timeout=600 -y -qq
 # installed above), checked and tested here, never applied.
 tf_dir="$(mktemp -d)"
 trap 'rm -rf "$tf_dir"' EXIT
-if ! command -v terraform >/dev/null 2>&1; then
+if ! terraform version 2>/dev/null | head -n 1 | grep -qx "Terraform v${TERRAFORM_VERSION}"; then
   curl -fsSL --retry 3 --max-time 300 -o "$tf_dir/terraform.zip" \
     "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
   echo "${TERRAFORM_SHA256}  $tf_dir/terraform.zip" | sha256sum --check --strict -

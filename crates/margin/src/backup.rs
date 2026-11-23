@@ -691,6 +691,18 @@ mod tests {
 
     #[test_id(t19vbff)]
     #[test]
+    fn a_missing_database_is_an_error_and_uploads_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = TestClock::at(T0);
+        let bucket = MemStore::new(&clock);
+        let err = snapshot(&dir.path().join("absent.db"), dir.path(), &bucket, &clock);
+        assert!(matches!(err, Err(BackupError::Snapshot(_))));
+        assert!(bucket.keys().is_empty());
+        assert!(!dir.path().join("absent.db").exists());
+    }
+
+    #[test_id(t5sofkt)]
+    #[test]
     fn two_runs_at_different_clock_times_make_two_keys() {
         let dir = tempfile::tempdir().unwrap();
         let path = populated(dir.path());
