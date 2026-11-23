@@ -229,6 +229,7 @@ async fn a_carried_a_removed_and_a_text_changed_thread_show_with_changed_lines_m
             ],
             "{seen:?}"
         );
+        assert_eq!(seen.carried_line, 21, "{seen:?}");
         assert!(
             seen.page_scroll_width <= width,
             "page scrolls sideways: {seen:?}"
