@@ -33,7 +33,7 @@ impl Clock for SystemClock {
     fn now_unix(&self) -> i64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0)
+            .expect("the system clock is after the Unix epoch")
+            .as_secs() as i64
     }
 }

@@ -480,3 +480,85 @@ fn an_unspecified_listen_address_is_refused() {
         );
     }
 }
+
+/// A harness whose database has one worker and one queue slot, plus the metrics it pushes.
+fn tiny_queue_harness() -> (
+    Router,
+    Db,
+    std::sync::mpsc::Receiver<margin::metrics::Event>,
+    tempfile::TempDir,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let agents = dir.path().join("agents.toml");
+    std::fs::write(&agents, "").unwrap();
+    let config = Config::parse(&format!(
+        "listen = \"127.0.0.1:0\"\nbase_url = \"http://margin.test\"\ndatabase = \"{}\"\nagents_file = \"{}\"\notlp_endpoint = \"http://127.0.0.1:1\"\n",
+        dir.path().join("m.db").display(),
+        agents.display()
+    ))
+    .unwrap();
+    let db = Db::open_with(&config.database, 1, 1).unwrap();
+    let (metrics, events) = Metrics::capture();
+    let state = AppState {
+        db: db.clone(),
+        config: Arc::new(config),
+        clock: Arc::new(FixedClock(1)),
+        rng: Arc::new(CountingRng(AtomicU64::new(1))),
+        metrics,
+        highlighter: Arc::new(Highlighter::new()),
+    };
+    (router(state), db, events, dir)
+}
+
+#[test_id(tk49gd7)]
+#[tokio::test]
+async fn a_full_database_queue_answers_503_and_pushes_the_metric() {
+    use margin::metrics::Event;
+    let (app, db, events, _dir) = tiny_queue_harness();
+    let (park_tx, park_rx) = std::sync::mpsc::channel::<()>();
+    let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+    let parked = tokio::spawn({
+        let db = db.clone();
+        async move {
+            db.call(move |_| {
+                started_tx.send(()).unwrap();
+                park_rx.recv().unwrap();
+            })
+            .await
+        }
+    });
+    // Wait on the worker's own signal that it holds the first job.
+    tokio::task::spawn_blocking(move || started_rx.recv().unwrap())
+        .await
+        .unwrap();
+    // Fill the one slot: the first poll of `call` enqueues the job.
+    let mut filler = Box::pin(db.call(|_| ()));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(std::future::Future::poll(filler.as_mut(), &mut cx).is_pending());
+
+    let (status, _) = send(&app, Method::GET, "/api/collections/anything", None, None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    let pushed: Vec<Event> = events.try_iter().collect();
+    assert!(
+        pushed.iter().any(|e| matches!(e, Event::QueueFull)),
+        "{pushed:?}"
+    );
+
+    park_tx.send(()).unwrap();
+    parked.await.unwrap().unwrap();
+    filler.await.unwrap();
+}
+
+#[test_id(tjvet43)]
+#[tokio::test]
+async fn requests_and_page_renders_push_their_metrics() {
+    use margin::metrics::Event;
+    let (app, _db, events, _dir) = tiny_queue_harness();
+    let (status, _) = send(&app, Method::GET, "/c/missing", None, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let pushed: Vec<Event> = events.try_iter().collect();
+    assert!(
+        pushed.iter().any(|e| matches!(e, Event::Request { route, status, .. } if route == "/c/{id}" && *status == 404)),
+        "{pushed:?}"
+    );
+}

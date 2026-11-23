@@ -53,7 +53,7 @@ fi
 
 install -m 0644 "$here/margin.service" "$unit_dir/margin.service"
 systemctl --user daemon-reload
-systemctl --user enable margin.service >/dev/null 2>&1 || true
+systemctl --user enable margin.service
 systemctl --user restart margin.service
 
 for _ in $(seq 30); do

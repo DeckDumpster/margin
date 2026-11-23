@@ -4,6 +4,14 @@
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
+fn unknown(what: &str, value: &str) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        0,
+        rusqlite::types::Type::Text,
+        format!("unknown {what} {value:?} in the database").into(),
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
@@ -18,11 +26,11 @@ impl Kind {
             Kind::Prose => "prose",
         }
     }
-    fn parse(s: &str) -> Kind {
-        if s == "prose" {
-            Kind::Prose
-        } else {
-            Kind::Code
+    fn parse(s: &str) -> rusqlite::Result<Kind> {
+        match s {
+            "code" => Ok(Kind::Code),
+            "prose" => Ok(Kind::Prose),
+            other => Err(unknown("kind", other)),
         }
     }
 }
@@ -43,11 +51,12 @@ impl State {
             State::Closed => "closed",
         }
     }
-    fn parse(s: &str) -> State {
+    fn parse(s: &str) -> rusqlite::Result<State> {
         match s {
-            "published" => State::Published,
-            "closed" => State::Closed,
-            _ => State::Open,
+            "open" => Ok(State::Open),
+            "published" => Ok(State::Published),
+            "closed" => Ok(State::Closed),
+            other => Err(unknown("state", other)),
         }
     }
 }
@@ -136,7 +145,7 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<Collection>> 
                     id: r.get(0)?,
                     title: r.get(1)?,
                     cover_note: r.get(2)?,
-                    state: State::parse(&r.get::<_, String>(3)?),
+                    state: State::parse(&r.get::<_, String>(3)?)?,
                     created_by: r.get(4)?,
                     created_at: r.get(5)?,
                     updated_at: r.get(6)?,
@@ -159,7 +168,7 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<Collection>> 
             Ok(Document {
                 id: r.get(0)?,
                 path: r.get(1)?,
-                kind: Kind::parse(&r.get::<_, String>(2)?),
+                kind: Kind::parse(&r.get::<_, String>(2)?)?,
                 version: r.get(3)?,
                 text: r.get(4)?,
             })
@@ -186,7 +195,7 @@ pub fn list(
         Ok(Summary {
             id: r.get(0)?,
             title: r.get(1)?,
-            state: State::parse(&r.get::<_, String>(2)?),
+            state: State::parse(&r.get::<_, String>(2)?)?,
             created_by: r.get(3)?,
             created_at: r.get(4)?,
         })
