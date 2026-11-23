@@ -4,7 +4,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
+use chromiumoxide::cdp::browser_protocol::emulation::{
+    MediaFeature, SetDeviceMetricsOverrideParams, SetEmulatedMediaParams,
+};
 use chromiumoxide::page::{Page, ScreenshotParams};
 use margin::agents::OsRng;
 use margin::api::{AppState, router};
@@ -358,6 +360,41 @@ async fn a_cover_note_with_wide_code_and_a_table_never_scrolls_sideways_on_a_pho
         .into_value()
         .unwrap();
     assert!(sw <= PHONE, "page scrolls sideways: {sw}");
+    browser.close().await.unwrap();
+    let _ = pump.await;
+}
+
+/// Evidence only: nothing asserts on these. The cover of a `cr` description, as the reader sees it.
+#[test_id(t4qr6zi)]
+#[tokio::test]
+#[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
+async fn the_cover_note_is_photographed_on_a_phone_and_a_desktop_in_both_schemes() {
+    let cover = "## Summary\n\nThe review page renders its cover note.\n\n- headings and lists\n  - nested items with `code spans`\n- a [link](https://example.com) and **bold** text\n\nSource repository: margin\nSource commit: 4c00ebb\n\n```\nfn render(text: &str) -> String { markdown::html(text) }\n```\n\n| field | before | after |\n|---|---|---|\n| cover | source | markup |\n\nWorld<T> stays text.";
+    let (url, dir) = serve_with_cover(cover).await;
+    let (mut browser, pump) = support::launch(dir.path()).await;
+    let page = browser.new_page("about:blank").await.unwrap();
+    for (width, mobile) in [(390, true), (1280, false)] {
+        for scheme in ["light", "dark"] {
+            viewport(&page, width, 700, mobile).await;
+            page.execute(
+                SetEmulatedMediaParams::builder()
+                    .feature(MediaFeature::new("prefers-color-scheme", scheme))
+                    .build(),
+            )
+            .await
+            .unwrap();
+            page.goto(&url)
+                .await
+                .unwrap()
+                .wait_for_navigation()
+                .await
+                .unwrap();
+            let name = format!("cover-after-{width}-{scheme}.png");
+            page.save_screenshot(ScreenshotParams::builder().build(), shot_dir().join(name))
+                .await
+                .unwrap();
+        }
+    }
     browser.close().await.unwrap();
     let _ = pump.await;
 }
