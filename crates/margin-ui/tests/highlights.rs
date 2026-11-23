@@ -383,10 +383,10 @@ async fn a_second_overlapping_highlight_leaves_the_shared_words_with_both_lanes(
     .await;
     assert_ne!(colours.0, colours.1, "lanes have distinct colours");
 
-    // Tapping the shared words opens both threads.
+    // Tapping the shared words opens both threads (posting left them open, so close them first).
     eval::<bool>(
         page,
-        "(() => { document.querySelector('[data-line=\"11\"] .hl.hl-l0.hl-l1').click(); return true; })()",
+        "(() => { document.querySelectorAll('.thread').forEach((t) => { t.hidden = true; }); document.querySelector('[data-line=\"11\"] .hl.hl-l0.hl-l1').click(); return true; })()",
     )
     .await;
     wait_for(
