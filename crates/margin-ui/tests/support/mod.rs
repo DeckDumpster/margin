@@ -16,7 +16,6 @@ use margin::metrics::Metrics;
 use margin::store::{Kind, NewCollection, NewDocument};
 use margin_core::SystemClock;
 
-pub mod webkit;
 
 /// The 3,000-line file every highlight suite serves.
 #[allow(dead_code)]
