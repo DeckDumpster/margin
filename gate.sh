@@ -20,12 +20,15 @@ for lib in libasound2 libatk-bridge2.0-0 libatk1.0-0 libcups2 libdbus-1-3 libdrm
   libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 libcairo2 libx11-6 libxcb1 libxcomposite1 \
   libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 fonts-liberation fonts-noto-cjk \
   fonts-noto-color-emoji; do
+  found=""
   for cand in "$lib" "${lib}t64"; do
-    if apt-cache show "$cand" >/dev/null 2>&1; then
-      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "$cand" >/dev/null
-      break
-    fi
+    if apt-cache show "$cand" >/dev/null 2>&1; then found="$cand"; break; fi
   done
+  if [ -z "$found" ]; then
+    echo "gate.sh: this archive has neither ${lib} nor ${lib}t64" >&2
+    exit 1
+  fi
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "$found" >/dev/null
 done
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends unzip curl ca-certificates >/dev/null
 
