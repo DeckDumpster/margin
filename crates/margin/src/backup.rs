@@ -586,6 +586,7 @@ mod tests {
                 title: &format!("review {n}"),
                 cover_note: "",
                 created_by: "agent",
+                source: None,
                 now: T0 + n as i64,
                 documents: &documents,
             },

@@ -716,6 +716,7 @@ mod tests {
                 title: "t",
                 cover_note: "",
                 created_by: "x",
+                source: None,
                 now: 100,
                 documents: &[(
                     "doc".to_string(),

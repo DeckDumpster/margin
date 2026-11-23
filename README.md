@@ -58,7 +58,7 @@ running on a timer.
 
 ```sh
 curl -H "Authorization: Bearer $(cat token-file)" -H 'Content-Type: application/json' \
-  -d '{"title":"…","cover_note":"…","documents":[{"path":"a.rs","kind":"code","text":"…"}]}' \
+  -d '{"title":"…","cover_note":"…","source":{"repository":"https://github.com/org/name","commit":"<40 hex>"},"documents":[{"path":"a.rs","kind":"code","text":"…"}]}' \
   "$BASE_URL/api/collections"      # 201 {"id": …, "url": …}
 ```
 

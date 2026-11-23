@@ -957,7 +957,7 @@
       if (h1 && fresh1) h1.textContent = fresh1.textContent;
       var meta = document.querySelector('.meta');
       var fmeta = page.querySelector('.meta');
-      if (meta && fmeta) meta.textContent = fmeta.textContent;
+      if (meta && fmeta) meta.replaceChildren.apply(meta, Array.prototype.map.call(fmeta.childNodes, function (n) { return document.importNode(n, true); }));
       var files = document.querySelector('.files');
       var ffiles = page.querySelector('.files');
       if (files && ffiles) {

@@ -238,6 +238,8 @@ struct CreateBody {
     title: String,
     #[serde(default)]
     cover_note: String,
+    #[serde(default)]
+    source: Option<store::Source>,
     documents: Vec<NewDocument>,
 }
 
@@ -262,6 +264,12 @@ async fn create(
             "a collection needs at least one document".into(),
         ));
     }
+    let source = body
+        .source
+        .as_ref()
+        .map(store::Source::normalised)
+        .transpose()
+        .map_err(ApiError::BadRequest)?;
     let mut seen = std::collections::HashSet::new();
     for d in &body.documents {
         if d.path.trim().is_empty() {
@@ -293,6 +301,7 @@ async fn create(
                 cover_note: &cover,
                 created_by: &agent,
                 now,
+                source: source.as_ref(),
                 documents: &documents,
             },
         )
@@ -365,7 +374,13 @@ async fn update(
     body: Result<Json<Patch>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<store::Collection>, ApiError> {
     s.agent(&headers).await?;
-    let Json(p) = body.map_err(|e| ApiError::BadRequest(e.body_text()))?;
+    let Json(mut p) = body.map_err(|e| ApiError::BadRequest(e.body_text()))?;
+    p.source = p
+        .source
+        .as_ref()
+        .map(store::Source::normalised)
+        .transpose()
+        .map_err(ApiError::BadRequest)?;
     if p.title.as_deref().is_some_and(|t| t.trim().is_empty()) {
         return Err(ApiError::BadRequest("title must not be empty".into()));
     }

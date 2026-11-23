@@ -116,7 +116,23 @@ pub struct Page {
     /// The newest change this page shows; its feed asks for what came after.
     pub seq: i64,
     pub cover_html: String,
+    pub source: Option<SourceView>,
     pub docs: Vec<DocView>,
+}
+
+/// The meta line's link to the commit the review's documents came from.
+pub struct SourceView {
+    pub href: String,
+    pub label: String,
+}
+
+impl SourceView {
+    fn new(s: &crate::store::Source) -> SourceView {
+        SourceView {
+            href: format!("{}/commit/{}", s.repository, s.commit),
+            label: format!("{}@{}", s.name(), &s.commit[..7]),
+        }
+    }
 }
 
 /// `html` with the highlights of `marks` that reach line `n` (`len` columns long) wrapped in runs.
@@ -224,6 +240,7 @@ pub fn render(
         can_publish: c.state != crate::store::State::Closed,
         seq,
         cover_html: crate::markdown::html(&c.cover_note),
+        source: c.source.as_ref().map(SourceView::new),
         docs,
     }
     .render()
