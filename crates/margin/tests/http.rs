@@ -1122,6 +1122,7 @@ async fn columns_after_a_tab_and_an_emoji_count_one_each() {
         .map(|(_, t)| text_of(t))
         .collect();
     assert_eq!(texts, ["\u{1F642}", "word"]);
+}
 
 // ---- the home page ----
 
