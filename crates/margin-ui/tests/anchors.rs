@@ -11,7 +11,7 @@ use chromiumoxide::cdp::browser_protocol::emulation::{
     SetDeviceMetricsOverrideParams, SetTouchEmulationEnabledParams,
 };
 use chromiumoxide::cdp::browser_protocol::input::{
-    DispatchTouchEventParams, DispatchTouchEventType, TouchPoint,
+    DispatchTouchEventParams, DispatchTouchEventReturns, DispatchTouchEventType, TouchPoint,
 };
 use chromiumoxide::page::{Page, ScreenshotParams};
 use margin::agents::OsRng;
@@ -152,10 +152,44 @@ async fn wait_for(page: &Page, what: &str, js: &str) {
     }
 }
 
+/// `touchEnd` and `touchCancel` must carry `"touchPoints": []`: CDP makes the key mandatory, and
+/// `DispatchTouchEventParams` omits it when empty.
+#[derive(serde::Serialize)]
+struct EndTouch {
+    #[serde(rename = "type")]
+    kind: DispatchTouchEventType,
+    #[serde(rename = "touchPoints")]
+    touch_points: Vec<TouchPoint>,
+}
+
+impl chromiumoxide::Method for EndTouch {
+    fn identifier(&self) -> chromiumoxide::types::MethodId {
+        "Input.dispatchTouchEvent".into()
+    }
+}
+
+impl chromiumoxide::Command for EndTouch {
+    type Response = DispatchTouchEventReturns;
+}
+
 async fn touch(page: &Page, kind: DispatchTouchEventType, at: Option<(f64, f64)>) {
     let points = at
         .map(|(x, y)| vec![TouchPoint::new(x, y)])
         .unwrap_or_default();
+    if matches!(
+        kind,
+        DispatchTouchEventType::TouchEnd | DispatchTouchEventType::TouchCancel
+    ) {
+        let params = EndTouch {
+            kind: kind.clone(),
+            touch_points: points,
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        page.execute(params)
+            .await
+            .unwrap_or_else(|e| panic!("dispatching {kind:?} {json}: {e}"));
+        return;
+    }
     let params = DispatchTouchEventParams::new(kind.clone(), points);
     let json = serde_json::to_string(&params).unwrap();
     page.execute(params)
