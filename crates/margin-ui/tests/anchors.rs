@@ -603,7 +603,10 @@ fn assert_marks_disjoint_in_gutter(b: &Boxes, count: usize, what: &str) {
             );
         }
     }
-    assert!(b.gut[2] <= b.code_left + 0.01, "{what}: gutter right of code: {b:?}");
+    assert!(
+        b.gut[2] <= b.code_left + 0.01,
+        "{what}: gutter right of code: {b:?}"
+    );
 }
 
 #[test_id(t23vk4f)]
@@ -619,7 +622,12 @@ async fn every_thread_on_a_line_has_its_own_mark_that_opens_it_however_many_cove
     let (x, y) = number_of(page, 17).await;
     touch(page, DispatchTouchEventType::TouchStart, Some((x, y)), None).await;
     touch(page, DispatchTouchEventType::TouchEnd, None, None).await;
-    wait_for(page, "the new-comment box", "document.querySelector('.newbox')").await;
+    wait_for(
+        page,
+        "the new-comment box",
+        "document.querySelector('.newbox')",
+    )
+    .await;
     post_from_box(page, "the fifth").await;
     wait_for(
         page,
@@ -660,7 +668,13 @@ async fn every_thread_on_a_line_has_its_own_mark_that_opens_it_however_many_cove
             ),
         )
         .await;
-        touch(page, DispatchTouchEventType::TouchStart, Some((cx, cy)), None).await;
+        touch(
+            page,
+            DispatchTouchEventType::TouchStart,
+            Some((cx, cy)),
+            None,
+        )
+        .await;
         touch(page, DispatchTouchEventType::TouchEnd, None, None).await;
         wait_for(
             page,
@@ -676,7 +690,9 @@ async fn every_thread_on_a_line_has_its_own_mark_that_opens_it_however_many_cove
         assert_eq!(open, [format!("thread-{id}")], "tap on mark {k}");
         eval::<bool>(
             page,
-            &format!("(() => {{ document.getElementById('thread-{id}').hidden = true; return true; }})()"),
+            &format!(
+                "(() => {{ document.getElementById('thread-{id}').hidden = true; return true; }})()"
+            ),
         )
         .await;
     }
@@ -700,7 +716,10 @@ async fn every_thread_on_a_line_has_its_own_mark_that_opens_it_however_many_cove
     .await;
     number_of(page, 17).await;
     let four = boxes_on_17(page).await;
-    assert!((four.gut_width - 22.0).abs() < 0.01, "gutter after delete: {four:?}");
+    assert!(
+        (four.gut_width - 22.0).abs() < 0.01,
+        "gutter after delete: {four:?}"
+    );
     assert_marks_disjoint_in_gutter(&four, 4, "after the delete");
     let gut18: f64 = eval(
         page,
