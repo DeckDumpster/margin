@@ -14,13 +14,13 @@ use margin_core::{Clock, Rng};
 use serde::{Deserialize, Serialize};
 use tower_http::timeout::TimeoutLayer;
 
+use crate::changes::{self, View};
 use crate::config::Config;
 use crate::db::{Db, DbError};
+use crate::feed::{self, Probe};
 use crate::highlight::Highlighter;
 use crate::metrics::{Event, Metrics};
 use crate::store::{self, NewCollection, NewDocument, Patch};
-use crate::changes::{self, View};
-use crate::feed::{self, Probe};
 use crate::threads::{
     self, Change, CreateError, Deleted, Mark, NewThread, Published, Scope, Thread, Visibility,
 };
@@ -953,7 +953,11 @@ struct PageLook {
     rows: Vec<changes::Row>,
 }
 
-fn look(conn: &mut rusqlite::Connection, id: &str, after: i64) -> rusqlite::Result<Option<PageLook>> {
+fn look(
+    conn: &mut rusqlite::Connection,
+    id: &str,
+    after: i64,
+) -> rusqlite::Result<Option<PageLook>> {
     let state: Option<String> = rusqlite::OptionalExtension::optional(conn.query_row(
         "SELECT state FROM collections WHERE id = ?1",
         [id],

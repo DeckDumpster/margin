@@ -34,3 +34,8 @@ integration = []
 name = "http"
 path = "tests/http.rs"
 required-features = ["integration"]
+
+[[test]]
+name = "feed"
+path = "tests/feed.rs"
+required-features = ["integration"]

@@ -104,19 +104,22 @@ pub fn read(conn: &mut Connection, view: View, after: i64) -> rusqlite::Result<B
                AND (?3 = 0 OR ch.visibility IS NULL OR ch.visibility = 'now')
              ORDER BY ch.seq LIMIT ?4",
         )?;
-        stmt.query_map(params![after, collection, hide_held, MAX_ROWS as i64], |r| {
-            Ok(Row {
-                seq: r.get(0)?,
-                kind: r.get(1)?,
-                collection_id: r.get(2)?,
-                thread_id: r.get(3)?,
-                comment_id: r.get(4)?,
-                author: r.get(5)?,
-                visibility: r.get(6)?,
-                body: r.get(7)?,
-                at: r.get(8)?,
-            })
-        })?
+        stmt.query_map(
+            params![after, collection, hide_held, MAX_ROWS as i64],
+            |r| {
+                Ok(Row {
+                    seq: r.get(0)?,
+                    kind: r.get(1)?,
+                    collection_id: r.get(2)?,
+                    thread_id: r.get(3)?,
+                    comment_id: r.get(4)?,
+                    author: r.get(5)?,
+                    visibility: r.get(6)?,
+                    body: r.get(7)?,
+                    at: r.get(8)?,
+                })
+            },
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?
     };
     let last_seq = if rows.len() == MAX_ROWS {
@@ -133,5 +136,7 @@ pub fn read(conn: &mut Connection, view: View, after: i64) -> rusqlite::Result<B
 
 /// The newest sequence number, for a page to start its feed from.
 pub fn newest(conn: &Connection) -> rusqlite::Result<i64> {
-    conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM changes", [], |r| r.get(0))
+    conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM changes", [], |r| {
+        r.get(0)
+    })
 }

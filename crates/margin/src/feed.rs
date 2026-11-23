@@ -115,7 +115,11 @@ mod tests {
         let started = Instant::now();
         let got: Result<i64, ()> = long_poll(&n, Duration::from_secs(30), || async {
             let k = looks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(if k == 0 { Probe::Empty(0) } else { Probe::Ready(6) })
+            Ok(if k == 0 {
+                Probe::Empty(0)
+            } else {
+                Probe::Ready(6)
+            })
         })
         .await;
         publisher.await.unwrap();

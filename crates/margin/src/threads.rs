@@ -226,8 +226,10 @@ pub fn create_thread(conn: &mut Connection, t: &NewThread) -> Result<Thread, Cre
         },
     )?;
     tx.commit()?;
-    Ok(get(conn, Scope::of(t.author), t.collection_id, t.thread_id)?
-        .expect("the thread was just inserted"))
+    Ok(
+        get(conn, Scope::of(t.author), t.collection_id, t.thread_id)?
+            .expect("the thread was just inserted"),
+    )
 }
 
 const THREAD_COLUMNS: &str =
@@ -333,11 +335,7 @@ pub fn page(
 }
 
 /// Every thread of a collection, oldest first.
-pub fn all(
-    conn: &Connection,
-    scope: Scope,
-    collection_id: &str,
-) -> rusqlite::Result<Vec<Thread>> {
+pub fn all(conn: &Connection, scope: Scope, collection_id: &str) -> rusqlite::Result<Vec<Thread>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {THREAD_COLUMNS} FROM threads t JOIN anchors a ON a.id = t.anchor_id
          WHERE t.collection_id = ?1 AND {} ORDER BY t.created_at, t.id",
@@ -428,7 +426,14 @@ pub fn add_comment(
     tx.execute(
         "INSERT INTO comments (id, thread_id, author, body, visibility, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-        params![comment_id, thread_id, author, body, visibility.as_str(), now],
+        params![
+            comment_id,
+            thread_id,
+            author,
+            body,
+            visibility.as_str(),
+            now
+        ],
     )?;
     changes::record(
         &tx,
@@ -604,7 +609,11 @@ pub enum Published {
 }
 
 /// Release every held comment of the collection, move `open` to `published`, and log it once.
-pub fn publish(conn: &mut Connection, collection_id: &str, now: i64) -> rusqlite::Result<Published> {
+pub fn publish(
+    conn: &mut Connection,
+    collection_id: &str,
+    now: i64,
+) -> rusqlite::Result<Published> {
     let tx = conn.transaction()?;
     let state: Option<String> = tx
         .query_row(
