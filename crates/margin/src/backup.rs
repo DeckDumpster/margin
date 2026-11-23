@@ -689,7 +689,7 @@ mod tests {
         drop(writer);
     }
 
-    #[test_id(t19vbff)]
+    #[test_id(tiqevlc)]
     #[test]
     fn a_missing_database_is_an_error_and_uploads_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -701,7 +701,7 @@ mod tests {
         assert!(!dir.path().join("absent.db").exists());
     }
 
-    #[test_id(t5sofkt)]
+    #[test_id(t19vbff)]
     #[test]
     fn two_runs_at_different_clock_times_make_two_keys() {
         let dir = tempfile::tempdir().unwrap();
