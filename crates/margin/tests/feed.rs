@@ -692,3 +692,30 @@ async fn comments_and_feed_calls_push_their_metrics() {
         "{pushed:?}"
     );
 }
+
+#[test_id(tol26g5)]
+#[tokio::test]
+async fn a_wait_of_six_hundred_is_held_no_longer_than_thirty_seconds() {
+    let h = harness();
+    collection(&h).await;
+    let after = last_seq(&h).await;
+    // From here the clock is the runtime's: with nothing else pending, an idle runtime jumps
+    // straight to the one timer the feed call set, so the call's own bound shows as elapsed time.
+    tokio::time::pause();
+    let started = tokio::time::Instant::now();
+    let got = json_of(
+        &h.app,
+        Method::GET,
+        &format!("/api/changes?after={after}&wait=600"),
+        Some(ADA),
+        None,
+        StatusCode::OK,
+    )
+    .await;
+    let held = started.elapsed();
+    assert!(
+        held >= Duration::from_secs(30) && held < Duration::from_secs(31),
+        "{held:?}"
+    );
+    assert_eq!(got["changes"], json!([]));
+}

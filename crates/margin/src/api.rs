@@ -327,15 +327,7 @@ async fn list(
     }
     let after = match q.after {
         None => None,
-        Some(c) => {
-            let (at, id) = c
-                .split_once('.')
-                .ok_or_else(|| ApiError::BadRequest("after is not a cursor".into()))?;
-            let at: i64 = at
-                .parse()
-                .map_err(|_| ApiError::BadRequest("after is not a cursor".into()))?;
-            Some((at, id.to_string()))
-        }
+        Some(c) => Some(parse_cursor(&c)?),
     };
     let mut items = s
         .run(move |conn| {

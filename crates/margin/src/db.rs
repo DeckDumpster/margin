@@ -47,12 +47,6 @@ pub struct Db {
     notifier: Notifier,
 }
 
-fn newest_change(conn: &Connection) -> rusqlite::Result<i64> {
-    conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM changes", [], |r| {
-        r.get(0)
-    })
-}
-
 fn connect(path: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
     conn.busy_timeout(std::time::Duration::from_secs(2))?;
@@ -81,8 +75,9 @@ impl Db {
     pub fn open_with(path: &Path, workers: usize, capacity: usize) -> Result<Db, DbError> {
         let mut first = connect(path).map_err(|e| DbError::Open(e.to_string()))?;
         migrate(&mut first).map_err(|e| DbError::Open(e.to_string()))?;
-        let notifier =
-            Notifier::new(newest_change(&first).map_err(|e| DbError::Open(e.to_string()))?);
+        let notifier = Notifier::new(
+            crate::changes::newest(&first).map_err(|e| DbError::Open(e.to_string()))?,
+        );
         let (tx, rx) = sync_channel::<Job>(capacity);
         let rx: Arc<Mutex<Receiver<Job>>> = Arc::new(Mutex::new(rx));
         let mut conns = vec![first];
@@ -107,7 +102,7 @@ impl Db {
                                 let before = conn.total_changes();
                                 job(&mut conn);
                                 if conn.total_changes() != before
-                                    && let Ok(seq) = newest_change(&conn)
+                                    && let Ok(seq) = crate::changes::newest(&conn)
                                 {
                                     notifier.publish(seq);
                                 }
