@@ -10,7 +10,7 @@ documents and comments over HTTP and read a change feed.
 
 margin runs on the product host named in `deploy/prod-host`, as the systemd user unit
 `margin.service`. It listens on the host's tailnet address only and has no sign-in: the tailnet
-is the guard, so the server refuses an unspecified listen address (`0.0.0.0`, `::`). Its data is
+is the guard, so the server refuses an unspecified listen address (every interface). Its data is
 one SQLite file under `~/.local/share/margin/`.
 
 **Deploy.** Every push to `main` runs `CI` (`.github/workflows/ci.yml`): the gate, then a release
