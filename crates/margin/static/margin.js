@@ -50,6 +50,12 @@
       for (var n = Math.min(a, b); n <= Math.max(a, b); n++) rows[n - 1].classList.toggle('sel', on);
     }
 
+    function whoText(first, last, words) {
+      return words
+        ? (first === last ? 'Words on line ' + first : 'Words on lines ' + first + '\u2013' + last)
+        : first === last ? 'Line ' + first : 'Lines ' + first + '\u2013' + last;
+    }
+
     function openBox(lines, first, last, cols) {
       var open = Array.prototype.slice.call(document.querySelectorAll('form.newbox'));
       var same = null;
@@ -78,9 +84,7 @@
       }
       var who = document.createElement('div');
       who.className = 'who';
-      who.textContent = cols
-        ? (first === last ? 'Words on line ' + first : 'Words on lines ' + first + '\u2013' + last)
-        : first === last ? 'Line ' + first : 'Lines ' + first + '\u2013' + last;
+      who.textContent = whoText(first, last, !!cols);
       var area = document.createElement('textarea');
       area.name = 'body';
       area.rows = 3;
@@ -615,20 +619,54 @@
     var seq = Number(body.getAttribute('data-seq'));
     var failures = 0;
 
+    // The reader's unposted text outlives a rewrite of the thread around it: its hidden state, its
+    // reply text and an open edit move into `fresh`. `moved` collects old textarea -> new one, so
+    // the caller can put the focus back.
+    function transfer(old, fresh, moved) {
+      fresh.hidden = old.hidden;
+      var was = old.querySelector('form.reply textarea');
+      var now = fresh.querySelector('form.reply textarea');
+      if (was && now) {
+        now.value = was.value;
+        moved.set(was, now);
+      }
+      var edit = old.querySelector('form.edit');
+      var cm = edit && edit.closest('.cm');
+      var body = cm && fresh.querySelector('.cm[data-comment="' + cm.getAttribute('data-comment') + '"] .body');
+      if (body) {
+        edit._body = body;
+        body.replaceWith(edit);
+      }
+    }
+
+    // The focused textarea and its selection, to be put back by restore() once its node has been
+    // replaced or moved (which blurs it).
+    function holdFocus() {
+      var el = document.activeElement;
+      var held = { moved: new Map(), restore: function () {} };
+      if (!el || el.tagName !== 'TEXTAREA') return held;
+      var sel = [el.selectionStart, el.selectionEnd, el.selectionDirection];
+      held.restore = function () {
+        var now = held.moved.get(el) || el;
+        if (!now.isConnected) return;
+        now.focus({ preventScroll: true });
+        try {
+          now.setSelectionRange(sel[0], sel[1], sel[2]);
+        } catch (e) {}
+      };
+      return held;
+    }
+
     function put(t) {
       var tpl = document.createElement('template');
       tpl.innerHTML = t.html.trim();
       var fresh = tpl.content.firstElementChild;
       var old = document.getElementById('thread-' + t.id);
       if (old) {
-        if (old.querySelector('form.edit')) return; // an edit in progress is not clobbered
-        fresh.hidden = old.hidden;
-        var was = old.querySelector('form.reply textarea');
-        var now = fresh.querySelector('form.reply textarea');
-        var focused = was && document.activeElement === was;
-        if (was && now) now.value = was.value;
+        var held = holdFocus();
+        transfer(old, fresh, held.moved);
         old.replaceWith(fresh);
-        if (focused && now) now.focus({ preventScroll: true });
+        held.restore();
         return;
       }
       var lines = document.querySelector('.lines[data-version="' + t.version_id + '"]');
@@ -638,11 +676,244 @@
       at.after(fresh);
     }
 
-    function apply(d) {
-      if (d.reload) {
-        location.reload();
-        return;
+    // ---- a new version, or a change to the collection: the page refreshes in place ------------
+
+    function carryOf(from, to, first, last, startCol, endCol) {
+      var q = 'from=' + from + '&to=' + to + '&first_line=' + first + '&last_line=' + last;
+      if (startCol !== null && startCol !== undefined) q += '&start_col=' + startCol + '&end_col=' + endCol;
+      return fetch(url('/carry?' + q)).then(function (res) {
+        if (res.status === 404 || res.status === 400) return null; // the version is gone: clamp
+        if (!res.ok) throw new Error('carry answered ' + res.status);
+        return res.json();
+      });
+    }
+
+    function boxAnchor(form) {
+      var has = form.hasAttribute('data-start-col');
+      return [
+        Number(form.getAttribute('data-version')),
+        Number(form.getAttribute('data-first')),
+        Number(form.getAttribute('data-last')),
+        has ? Number(form.getAttribute('data-start-col')) : null,
+        has ? Number(form.getAttribute('data-end-col')) : null,
+      ];
+    }
+
+    // The first row whose bottom is below the top of the screen, if it is on screen at all.
+    function topRow() {
+      var rows = document.querySelectorAll('.ln');
+      var lo = 0;
+      var hi = rows.length;
+      while (lo < hi) {
+        var mid = (lo + hi) >> 1;
+        if (rows[mid].getBoundingClientRect().bottom > 0) hi = mid;
+        else lo = mid + 1;
       }
+      var row = rows[lo];
+      return row && row.getBoundingClientRect().top < window.innerHeight ? row : null;
+    }
+
+    function onScreen(el) {
+      var r = el.getBoundingClientRect();
+      return r.bottom > 0 && r.top < window.innerHeight;
+    }
+
+    // What to keep still while the page is rewritten: the focused form if it is on screen, else the
+    // topmost visible line. {el, find}: `find` returns the same thing afterwards.
+    function placeToHold(replaced) {
+      var focus = document.activeElement;
+      var form = focus && focus.closest && focus.closest('form');
+      if (form && onScreen(form)) {
+        var thread = form.classList.contains('reply') && form.closest('.thread');
+        if (thread) return { el: thread, find: function () { return document.getElementById(thread.id); } };
+        return { el: form, find: function () { return form; } };
+      }
+      var row = topRow();
+      if (!row) return null;
+      var section = row.closest('section.doc');
+      var entry = replaced.filter(function (e) { return e.old === section; })[0];
+      if (!entry) return { el: row, find: function () { return row; } };
+      return { el: row, entry: entry, line: Number(row.getAttribute('data-line')) };
+    }
+
+    // Everything the swap needs, fetched: the page, and where each box and the held line land.
+    function prepare() {
+      return fetch(url(''), { cache: 'no-store' })
+        .then(function (res) {
+          if (!res.ok) throw new Error('page answered ' + res.status);
+          return res.text();
+        })
+        .then(function (html) {
+          var page = new DOMParser().parseFromString(html, 'text/html');
+          var entries = [];
+          var fresh = Array.prototype.slice.call(page.querySelectorAll('section.doc'));
+          fresh.forEach(function (fs) {
+            var old = document.getElementById(fs.id);
+            var was = old && old.querySelector('.lines').getAttribute('data-version');
+            if (old && was === fs.querySelector('.lines').getAttribute('data-version')) {
+              entries.push({ old: old, keep: true });
+            } else {
+              entries.push({ old: old, fresh: document.importNode(fs, true) });
+            }
+          });
+          var replaced = entries.filter(function (e) { return e.old && !e.keep; });
+          var plan = {
+            page: page,
+            entries: entries,
+            gone: Array.prototype.filter.call(document.querySelectorAll('section.doc'), function (o) {
+              return !page.getElementById(o.id);
+            }),
+            answers: new Map(),
+            hold: placeToHold(replaced),
+          };
+          function missing() {
+            var out = [];
+            replaced.forEach(function (e) {
+              e.old.querySelectorAll('form.newbox').forEach(function (f) {
+                if (!plan.answers.has(f)) out.push([f, e]);
+              });
+            });
+            var h = plan.hold;
+            if (h && h.entry && !plan.answers.has(h)) out.push([h, h.entry]);
+            return out;
+          }
+          // A box opened while these calls are in flight is asked about on the next round, before
+          // anything is swapped.
+          function settle() {
+            var todo = missing();
+            if (!todo.length) return plan;
+            return Promise.all(
+              todo.map(function (pair) {
+                var key = pair[0];
+                var from = pair[1].old.querySelector('.lines').getAttribute('data-version');
+                var to = pair[1].fresh.querySelector('.lines').getAttribute('data-version');
+                var a = key === plan.hold ? [from, plan.hold.line, plan.hold.line, null, null] : boxAnchor(key);
+                return carryOf(from, to, a[1], a[2], a[3], a[4]).then(function (answer) {
+                  plan.answers.set(key, answer);
+                });
+              })
+            ).then(settle);
+          }
+          return settle();
+        });
+    }
+
+    function clampTo(lines, n) {
+      return Math.max(1, Math.min(n, rowsOf(lines).length));
+    }
+
+    // Move a box to where its anchor now sits in `lines`, the fresh document.
+    function carryBox(form, lines, answer) {
+      var first, last, cols, state;
+      if (answer) {
+        first = answer.first_line;
+        last = answer.last_line;
+        state = answer.state;
+        cols = answer.start_col === undefined ? null : [answer.start_col, answer.end_col];
+      } else {
+        first = clampTo(lines, Number(form.getAttribute('data-first')));
+        last = clampTo(lines, Number(form.getAttribute('data-last')));
+        state = 'removed';
+        cols = null;
+      }
+      form.setAttribute('data-version', lines.getAttribute('data-version'));
+      form.setAttribute('data-first', first);
+      form.setAttribute('data-last', last);
+      if (cols) {
+        form.setAttribute('data-start-col', cols[0]);
+        form.setAttribute('data-end-col', cols[1]);
+      } else {
+        form.removeAttribute('data-start-col');
+        form.removeAttribute('data-end-col');
+      }
+      var who = form.querySelector('.who');
+      who.textContent = whoText(first, last, !!cols);
+      var label = form.querySelector('.carry');
+      var why = state === 'removed' ? 'on a line since removed' : state === 'text_changed' ? 'text since changed' : null;
+      if (!why && label) label.remove();
+      if (why) {
+        if (!label) {
+          label = document.createElement('div');
+          label.className = 'carry';
+          who.before(label);
+        }
+        label.textContent = why;
+      }
+      rowsOf(lines)[last - 1].after(form);
+    }
+
+    // Swap the page for the fetched one, synchronously, keeping what the reader has written.
+    function swapPage(plan, held) {
+      var page = plan.page;
+      document.title = page.title;
+      var h1 = document.querySelector('h1.title');
+      var fresh1 = page.querySelector('h1.title');
+      if (h1 && fresh1) h1.textContent = fresh1.textContent;
+      var meta = document.querySelector('.meta');
+      var fmeta = page.querySelector('.meta');
+      if (meta && fmeta) meta.textContent = fmeta.textContent;
+      var cover = document.querySelector('.cover');
+      var fcover = page.querySelector('.cover');
+      if (fcover && cover) cover.textContent = fcover.textContent;
+      else if (fcover) (meta || document.querySelector('header.top')).after(document.importNode(fcover, true));
+      else if (cover) cover.remove();
+      if (publish) {
+        var fpub = page.getElementById('publish');
+        if (fpub) publish.hidden = fpub.hidden;
+      }
+      plan.gone.forEach(function (o) {
+        o.remove();
+      });
+      var prev = null;
+      plan.entries.forEach(function (e) {
+        if (e.keep) {
+          prev = e.old;
+          return;
+        }
+        var lines = e.fresh.querySelector('.lines');
+        if (e.old) {
+          if (g && e.old.contains(g.lines)) stopGesture();
+          if (pending && e.old.contains(pending.lines)) {
+            window.getSelection().removeAllRanges();
+            pending = null;
+            cbtn.hidden = true;
+          }
+          e.fresh.querySelectorAll('.thread').forEach(function (ft) {
+            var ot = document.getElementById(ft.id);
+            if (ot) transfer(ot, ft, held.moved);
+          });
+          e.old.querySelectorAll('form.newbox').forEach(function (form) {
+            carryBox(form, lines, plan.answers.get(form) || null);
+          });
+          e.old.replaceWith(e.fresh);
+        } else if (prev) {
+          prev.after(e.fresh);
+        } else {
+          (document.querySelector('.cover') || document.querySelector('.meta')).after(e.fresh);
+        }
+        prev = e.fresh;
+      });
+    }
+
+    function holdPlace(plan) {
+      var h = plan.hold;
+      if (!h) return null;
+      var top = h.el.getBoundingClientRect().top;
+      return function () {
+        var el = h.find ? h.find() : null;
+        if (!h.find) {
+          var e = h.entry;
+          var lines = e.fresh.querySelector('.lines');
+          var a = plan.answers.get(h);
+          el = rowsOf(lines)[a ? a.first_line - 1 : clampTo(lines, h.line) - 1];
+        }
+        if (!el || !el.isConnected) return;
+        var shift = el.getBoundingClientRect().top - top;
+        if (shift) window.scrollBy(0, shift);
+      };
+    }
+
+    function applyChanges(d) {
       d.threads.forEach(put);
       d.gone.forEach(function (id) {
         var t = document.getElementById('thread-' + id);
@@ -655,6 +926,23 @@
       if (publish) publish.hidden = d.state === 'closed';
     }
 
+    // Nothing on the page changes until everything it needs has arrived; a failure leaves the page
+    // as it was and the poll asks again.
+    function apply(d) {
+      if (!d.reload) {
+        applyChanges(d);
+        return Promise.resolve();
+      }
+      return prepare().then(function (plan) {
+        var held = holdFocus();
+        var restorePlace = holdPlace(plan);
+        swapPage(plan, held);
+        applyChanges(d);
+        held.restore();
+        if (restorePlace) restorePlace();
+      });
+    }
+
     function poll() {
       fetch(url('/changes?after=' + seq + '&wait=25'))
         .then(function (res) {
@@ -662,10 +950,11 @@
           return res.json();
         })
         .then(function (d) {
-          apply(d);
-          seq = d.last_seq;
-          failures = 0;
-          poll();
+          return apply(d).then(function () {
+            seq = d.last_seq;
+            failures = 0;
+            poll();
+          });
         })
         .catch(function () {
           failures++;
