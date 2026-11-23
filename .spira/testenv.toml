@@ -8,3 +8,8 @@ default = ["gate"]
 [tier.gate]
 argv = ["bash", "gate.sh"]
 timeout = 2400
+
+# Compiles what the gate tests and runs no test; the harness runs it first, uncharged.
+[tier.build]
+argv = ["bash", "gate.sh", "--build-only"]
+timeout = 2400
