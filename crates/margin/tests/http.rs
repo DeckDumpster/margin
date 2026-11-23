@@ -1668,3 +1668,167 @@ async fn a_version_with_a_thread_started_on_it_is_not_deleted() {
     assert_eq!(s, StatusCode::CONFLICT);
     assert!(reader_page(&h, &id).await.contains("fresh"));
 }
+
+async fn carry(h: &Harness, id: &str, query: &str) -> (StatusCode, Value) {
+    let (s, body) = send(
+        &h.app,
+        Method::GET,
+        &format!("/c/{id}/carry?{query}"),
+        None,
+        None,
+    )
+    .await;
+    (s, serde_json::from_str(&body).unwrap_or(Value::Null))
+}
+
+/// A collection of `a.txt` (lines "line 1".."line 12") with a second version `text`; returns
+/// (collection, version 1 id, version 2 id).
+async fn two_versions(h: &Harness, text: &str) -> (String, i64, i64) {
+    let (id, v1) = small_collection(h, 12).await;
+    let doc_id = document_id(h, &id).await;
+    let (s, v2) = post_version(h, &doc_id, Some(TOKEN), text).await;
+    assert_eq!(s, StatusCode::CREATED, "{v2}");
+    (id, v1, v2["id"].as_i64().unwrap())
+}
+
+#[test_id(trkaj07)]
+#[tokio::test]
+async fn the_carry_route_answers_where_a_moved_line_now_sits() {
+    let h = harness();
+    let text = numbered(
+        (1..=3)
+            .map(|n| format!("new {n}"))
+            .chain((1..=12).map(|n| format!("line {n}"))),
+    );
+    let (id, v1, v2) = two_versions(&h, &text).await;
+    let (s, got) = carry(
+        &h,
+        &id,
+        &format!("from={v1}&to={v2}&first_line=12&last_line=12"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{got}");
+    assert_eq!(
+        got,
+        json!({"first_line": 15, "last_line": 15, "state": "placed"})
+    );
+}
+
+#[test_id(ttc94g3)]
+#[tokio::test]
+async fn the_carry_route_puts_a_removed_line_at_the_nearest_survivor() {
+    let h = harness();
+    let text = numbered((1..=12).filter(|n| *n != 10).map(|n| format!("line {n}")));
+    let (id, v1, v2) = two_versions(&h, &text).await;
+    let (s, got) = carry(
+        &h,
+        &id,
+        &format!("from={v1}&to={v2}&first_line=10&last_line=10"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{got}");
+    assert_eq!(
+        got,
+        json!({"first_line": 9, "last_line": 9, "state": "removed"})
+    );
+}
+
+#[test_id(tefdzjf)]
+#[tokio::test]
+async fn the_carry_route_reports_a_highlight_whose_text_changed() {
+    let h = harness();
+    let text = numbered((1..=12).map(|n| {
+        if n == 4 {
+            "line four, rewritten".into()
+        } else {
+            format!("line {n}")
+        }
+    }));
+    let (id, v1, v2) = two_versions(&h, &text).await;
+    let (s, got) = carry(
+        &h,
+        &id,
+        &format!("from={v1}&to={v2}&first_line=4&last_line=4&start_col=0&end_col=4"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{got}");
+    assert_eq!(
+        got,
+        json!({"first_line": 4, "last_line": 4, "state": "text_changed"})
+    );
+    let (_, kept) = carry(
+        &h,
+        &id,
+        &format!("from={v1}&to={v2}&first_line=5&last_line=5&start_col=1&end_col=3"),
+    )
+    .await;
+    assert_eq!(
+        kept,
+        json!({"first_line": 5, "last_line": 5, "start_col": 1, "end_col": 3, "state": "placed"})
+    );
+}
+
+#[test_id(tnjtgr7)]
+#[tokio::test]
+async fn the_carry_route_refuses_versions_of_two_documents_and_unknown_versions() {
+    let h = harness();
+    let created = post(
+        &h.app,
+        "two",
+        vec![doc("a.txt", "one\ntwo\n"), doc("b.txt", "three\nfour\n")],
+    )
+    .await;
+    let id = created["id"].as_str().unwrap();
+    let (_, body) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{id}"),
+        None,
+        None,
+    )
+    .await;
+    let got: Value = serde_json::from_str(&body).unwrap();
+    let a = got["documents"][0]["version_id"].as_i64().unwrap();
+    let b = got["documents"][1]["version_id"].as_i64().unwrap();
+    let (s, _) = carry(&h, id, &format!("from={a}&to={b}&first_line=1&last_line=1")).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = carry(
+        &h,
+        id,
+        &format!("from={a}&to=99999&first_line=1&last_line=1"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = carry(
+        &h,
+        id,
+        &format!("from=99999&to={a}&first_line=1&last_line=1"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = carry(
+        &h,
+        "nope",
+        &format!("from={a}&to={a}&first_line=1&last_line=1"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[test_id(t6rnhkp)]
+#[tokio::test]
+async fn the_carry_route_refuses_a_bad_anchor_with_a_400() {
+    let h = harness();
+    let (id, v1, v2) = two_versions(&h, "a\nb\n").await;
+    for q in [
+        "first_line=0&last_line=1",
+        "first_line=3&last_line=2",
+        "first_line=1&last_line=13",
+        "first_line=1&last_line=1&start_col=0",
+        "first_line=1&last_line=1&end_col=2",
+        "first_line=1&last_line=1&start_col=0&end_col=99",
+    ] {
+        let (s, _) = carry(&h, &id, &format!("from={v1}&to={v2}&{q}")).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{q}");
+    }
+}

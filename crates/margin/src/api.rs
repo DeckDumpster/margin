@@ -105,7 +105,8 @@ pub fn router(state: AppState) -> Router {
         ));
     let feeds = Router::new()
         .route("/api/changes", get(agent_changes))
-        .route("/c/{id}/changes", get(page_changes));
+        .route("/c/{id}/changes", get(page_changes))
+        .route("/c/{id}/carry", get(carry_anchor));
     bounded
         .merge(feeds)
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
@@ -964,8 +965,8 @@ struct VersionMarks {
 #[derive(Serialize)]
 struct PageFeed {
     last_seq: i64,
-    /// A version arrived or went, or the collection changed: the page shows the newest version,
-    /// so it reloads.
+    /// A version arrived or went, or the collection changed: the page refreshes in place, keeping
+    /// what the reader has written and where he is.
     reload: bool,
     state: String,
     /// Threads to put on the page, each replacing the one it has there or going in after its
@@ -1093,6 +1094,67 @@ async fn page_changes(
             .map(|(version_id, marks)| VersionMarks { version_id, marks })
             .collect(),
     }))
+}
+
+#[derive(Deserialize)]
+struct CarryQuery {
+    from: i64,
+    to: i64,
+    first_line: u32,
+    last_line: u32,
+    /// Both or neither, as for a new thread.
+    start_col: Option<u32>,
+    end_col: Option<u32>,
+}
+
+#[derive(Serialize)]
+struct Carried {
+    first_line: u32,
+    last_line: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_col: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end_col: Option<u32>,
+    state: &'static str,
+}
+
+/// Where an anchor written on version `from` sits on version `to`. Writes nothing: the page
+/// asks it to move a comment box the reader is still writing in.
+async fn carry_anchor(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<CarryQuery>,
+) -> Result<Json<Carried>, ApiError> {
+    let cols = match (q.start_col, q.end_col) {
+        (Some(a), Some(b)) => Some((a, b)),
+        (None, None) => None,
+        _ => {
+            return Err(ApiError::BadRequest(
+                "start_col and end_col come together".into(),
+            ));
+        }
+    };
+    let anchor = Anchor {
+        first: q.first_line,
+        last: q.last_line,
+        cols,
+    };
+    let (from, to) = (q.from, q.to);
+    let found = s
+        .run(move |conn| Ok(versions::carry_between(conn, &id, from, to, &anchor)))
+        .await?;
+    match found {
+        Ok((a, state)) => Ok(Json(Carried {
+            first_line: a.first,
+            last_line: a.last,
+            start_col: a.cols.map(|c| c.0),
+            end_col: a.cols.map(|c| c.1),
+            state: state.as_str(),
+        })),
+        Err(versions::CarryError::NotFound) => Err(ApiError::NotFound),
+        Err(versions::CarryError::Anchor(e)) => Err(ApiError::BadRequest(e.to_string())),
+        Err(versions::CarryError::Db(e)) => Err(ApiError::Internal(e.to_string())),
+    }
 }
 
 #[derive(Deserialize)]
