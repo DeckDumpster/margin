@@ -1,6 +1,7 @@
 //! Pure margin logic: no I/O. Time and randomness arrive through traits so
 //! every consumer can be driven by a simulation.
 
+pub mod anchor;
 pub mod lines;
 
 use std::time::{SystemTime, UNIX_EPOCH};

@@ -12,7 +12,10 @@ pub const QUEUE_CAPACITY: usize = 64;
 /// Connections, one per thread.
 pub const WORKERS: usize = 4;
 
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_collections.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_collections.sql"),
+    include_str!("../migrations/0002_threads.sql"),
+];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send>;
 

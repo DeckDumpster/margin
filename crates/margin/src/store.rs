@@ -71,6 +71,7 @@ pub struct NewDocument {
 #[derive(Debug, Clone, Serialize)]
 pub struct Document {
     pub id: String,
+    pub version_id: i64,
     pub path: String,
     pub kind: Kind,
     pub version: i64,
@@ -156,7 +157,7 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<Collection>> 
         .optional()?;
     let Some(mut c) = head else { return Ok(None) };
     let mut stmt = conn.prepare(
-        "SELECT d.id, d.path, d.kind, v.number, v.text
+        "SELECT d.id, d.path, d.kind, v.number, v.text, v.id
          FROM documents d
          JOIN versions v ON v.document_id = d.id
               AND v.number = (SELECT MAX(number) FROM versions WHERE document_id = d.id)
@@ -171,6 +172,7 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<Collection>> 
                 kind: Kind::parse(&r.get::<_, String>(2)?)?,
                 version: r.get(3)?,
                 text: r.get(4)?,
+                version_id: r.get(5)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;

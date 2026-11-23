@@ -562,3 +562,308 @@ async fn requests_and_page_renders_push_their_metrics() {
         "{pushed:?}"
     );
 }
+
+/// (collection id, version id of its one document) for a small document of `lines` lines.
+async fn small_collection(h: &Harness, lines: usize) -> (String, i64) {
+    let text: String = (1..=lines).map(|n| format!("line {n}\n")).collect();
+    let created = post(&h.app, "t", vec![doc("a.txt", &text)]).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    let (_, body) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{id}"),
+        None,
+        None,
+    )
+    .await;
+    let got: Value = serde_json::from_str(&body).unwrap();
+    (id, got["documents"][0]["version_id"].as_i64().unwrap())
+}
+
+/// POST a thread; returns (status, fragment html, the marks header).
+async fn new_thread(
+    h: &Harness,
+    id: &str,
+    version: i64,
+    first: u32,
+    last: u32,
+    body: &str,
+) -> (StatusCode, String, Option<Value>) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/c/{id}/threads"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({"version_id": version, "first_line": first, "last_line": last, "body": body})
+                .to_string(),
+        ))
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let marks = resp
+        .headers()
+        .get("x-margin-marks")
+        .map(|v| serde_json::from_str(v.to_str().unwrap()).unwrap());
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8(bytes.to_vec()).unwrap(), marks)
+}
+
+fn attr(html: &str, name: &str) -> String {
+    let key = format!("{name}=\"");
+    let rest = html
+        .split(&key)
+        .nth(1)
+        .unwrap_or_else(|| panic!("no {name} in {html}"));
+    rest[..rest.find('"').unwrap()].to_string()
+}
+
+/// The lanes of the marks on line `n` of the reader page, left to right.
+fn lanes_on_line(html: &str, n: usize) -> Vec<u32> {
+    let row = html.split(&format!("data-line=\"{n}\"")).nth(1).unwrap();
+    let gut = row.split("<span class=\"gut\">").nth(1).unwrap();
+    let gut = gut.split("<span class=\"code\">").next().unwrap();
+    gut.split("--lane:")
+        .skip(1)
+        .map(|c| c[..c.find('"').unwrap()].parse().unwrap())
+        .collect()
+}
+
+#[test_id(tmmq8fx)]
+#[tokio::test]
+async fn a_line_a_range_and_an_overlapping_range_show_three_marks_in_three_lanes_on_one_line() {
+    let h = harness();
+    let (id, v) = small_collection(&h, 30).await;
+    let (s1, f1, _) = new_thread(&h, &id, v, 10, 20, "a range").await;
+    let (s2, _, _) = new_thread(&h, &id, v, 15, 25, "an overlapping range").await;
+    let (s3, f3, marks) = new_thread(&h, &id, v, 17, 17, "one line inside both").await;
+    assert_eq!(
+        (s1, s2, s3),
+        (
+            StatusCode::CREATED,
+            StatusCode::CREATED,
+            StatusCode::CREATED
+        )
+    );
+    assert_eq!(
+        (attr(&f1, "data-first"), attr(&f1, "data-last")),
+        ("10".into(), "20".into())
+    );
+    let marks = marks.expect("a new thread says where every mark now is");
+    assert_eq!(marks.as_array().unwrap().len(), 3);
+
+    let (_, page) = send(&h.app, Method::GET, &format!("/c/{id}"), None, None).await;
+    assert_eq!(lanes_on_line(&page, 17), [0, 1, 2]);
+    assert_eq!(lanes_on_line(&page, 12), [0]);
+    assert_eq!(lanes_on_line(&page, 22), [1]);
+    assert_eq!(lanes_on_line(&page, 27), Vec::<u32>::new());
+    // The thread sits under the last line of its anchor, and the single line's under line 17.
+    let tid = attr(&f3, "data-thread");
+    let at = page.find(&format!("id=\"thread-{tid}\"")).unwrap();
+    assert!(
+        page.find("data-line=\"17\"").unwrap() < at,
+        "thread follows line 17"
+    );
+    assert!(
+        at < page.find("data-line=\"18\"").unwrap(),
+        "thread precedes line 18"
+    );
+    assert!(page.contains("one line inside both"));
+}
+
+#[test_id(tf70epi)]
+#[tokio::test]
+async fn a_reply_appears_in_the_thread_fragment() {
+    let h = harness();
+    let (id, v) = small_collection(&h, 5).await;
+    let (_, f, _) = new_thread(&h, &id, v, 2, 3, "first").await;
+    let tid = attr(&f, "data-thread");
+    let (status, body) = send(
+        &h.app,
+        Method::POST,
+        &format!("/c/{id}/threads/{tid}/comments"),
+        None,
+        Some(json!({"body": "second <b>"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(
+        body.contains("first") && body.contains("second &#60;b&#62;"),
+        "{body}"
+    );
+    assert_eq!(body.matches("data-comment=").count(), 2);
+    let (status, _) = send(
+        &h.app,
+        Method::POST,
+        &format!("/c/{id}/threads/nope/comments"),
+        None,
+        Some(json!({"body": "x"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[test_id(tp5nwq2)]
+#[tokio::test]
+async fn bad_anchors_and_empty_bodies_are_refused() {
+    let h = harness();
+    let (id, v) = small_collection(&h, 5).await;
+    for (first, last) in [(3, 2), (0, 1), (1, 6)] {
+        let (status, _, _) = new_thread(&h, &id, v, first, last, "x").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{first}-{last}");
+    }
+    let (status, _, _) = new_thread(&h, &id, v, 1, 1, "   ").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _, _) = new_thread(&h, &id, v + 99, 1, 1, "x").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// Put a comment by `author` into a thread straight in the store, as an agent's would be.
+fn seed_comment(h: &Harness, thread: &str, author: &str) -> String {
+    let conn = rusqlite::Connection::open(h._dir.path().join("m.db")).unwrap();
+    conn.execute(
+        "INSERT INTO comments (id, thread_id, author, body, created_at, updated_at)
+         VALUES ('agentc', ?1, ?2, 'from an agent', 1, 1)",
+        rusqlite::params![thread, author],
+    )
+    .unwrap();
+    "agentc".to_string()
+}
+
+#[test_id(tlzq4a1)]
+#[tokio::test]
+async fn the_reader_edits_and_deletes_own_comments_but_not_an_agents() {
+    let h = harness();
+    let (id, v) = small_collection(&h, 5).await;
+    let (_, f, _) = new_thread(&h, &id, v, 1, 1, "mine").await;
+    let tid = attr(&f, "data-thread");
+    let mine = attr(&f, "data-comment");
+    let agent = seed_comment(&h, &tid, "tester");
+
+    let (status, body) = send(
+        &h.app,
+        Method::PATCH,
+        &format!("/c/{id}/comments/{mine}"),
+        None,
+        Some(json!({"body": "edited"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("edited") && !body.contains(">mine<"));
+
+    let (status, _) = send(
+        &h.app,
+        Method::PATCH,
+        &format!("/c/{id}/comments/{agent}"),
+        None,
+        Some(json!({"body": "hijack"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = send(
+        &h.app,
+        Method::DELETE,
+        &format!("/c/{id}/comments/{agent}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Deleting the reader's comment leaves the agent's thread; the page still has it.
+    let (status, body) = send(
+        &h.app,
+        Method::DELETE,
+        &format!("/c/{id}/comments/{mine}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("from an agent") && !body.contains("edited"));
+    let (status, _) = send(
+        &h.app,
+        Method::PATCH,
+        &format!("/c/{id}/comments/zzz"),
+        None,
+        Some(json!({"body": "x"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // A thread with no comments left goes, and the marks answer says so.
+    let (_, f2, _) = new_thread(&h, &id, v, 3, 4, "only").await;
+    let only = attr(&f2, "data-comment");
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!("/c/{id}/comments/{only}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let marks: Value =
+        serde_json::from_str(resp.headers()["x-margin-marks"].to_str().unwrap()).unwrap();
+    assert_eq!(marks.as_array().unwrap().len(), 1);
+    let (_, page) = send(&h.app, Method::GET, &format!("/c/{id}"), None, None).await;
+    assert!(lanes_on_line(&page, 3).is_empty());
+
+    // Deleting the whole collection takes its threads and anchors with it.
+    let (status, _) = send(
+        &h.app,
+        Method::DELETE,
+        &format!("/api/collections/{id}"),
+        Some(TOKEN),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+#[test_id(t9cgpwe)]
+#[tokio::test]
+async fn the_thread_list_paginates_without_repeats() {
+    let h = harness();
+    let (id, v) = small_collection(&h, 10).await;
+    let mut made = Vec::new();
+    for n in 1..=5 {
+        let (_, f, _) = new_thread(&h, &id, v, n, n, &format!("c{n}")).await;
+        made.push(attr(&f, "data-thread"));
+    }
+    let mut seen = Vec::new();
+    let mut after = String::new();
+    let mut pages = 0;
+    loop {
+        let uri = if after.is_empty() {
+            format!("/c/{id}/threads?limit=2")
+        } else {
+            format!("/c/{id}/threads?limit=2&after={after}")
+        };
+        let (status, body) = send(&h.app, Method::GET, &uri, None, None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let page: Value = serde_json::from_str(&body).unwrap();
+        for t in page["items"].as_array().unwrap() {
+            assert_eq!(t["comments"].as_array().unwrap().len(), 1);
+            seen.push(t["id"].as_str().unwrap().to_string());
+        }
+        pages += 1;
+        match page["next"].as_str() {
+            Some(n) => after = n.to_string(),
+            None => break,
+        }
+    }
+    assert_eq!(pages, 3);
+    let mut want = made.clone();
+    want.sort();
+    seen.sort();
+    assert_eq!(seen, want);
+    let (status, _) = send(&h.app, Method::GET, "/c/nope/threads", None, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = send(
+        &h.app,
+        Method::GET,
+        &format!("/c/{id}/threads?limit=0"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}

@@ -8,9 +8,10 @@ use axum::extract::{DefaultBodyLimit, MatchedPath, Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use margin_core::{Clock, Rng};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use tower_http::timeout::TimeoutLayer;
 
@@ -19,6 +20,9 @@ use crate::db::{Db, DbError};
 use crate::highlight::Highlighter;
 use crate::metrics::{Event, Metrics};
 use crate::store::{self, NewCollection, NewDocument, Patch};
+use crate::threads::{self, Change, CreateError, Mark, NewThread, Thread};
+use askama::Template;
+use margin_core::anchor::Anchor;
 
 /// Every non-feed route answers within this or is cut off.
 pub const REQUEST_DEADLINE: Duration = Duration::from_secs(3);
@@ -44,6 +48,12 @@ pub fn router(state: AppState) -> Router {
             get(read).patch(update).delete(remove),
         )
         .route("/c/{id}", get(reader))
+        .route("/c/{id}/threads", get(list_threads).post(create_thread))
+        .route("/c/{id}/threads/{tid}/comments", post(reply))
+        .route(
+            "/c/{id}/comments/{cid}",
+            patch(edit_comment).delete(delete_comment),
+        )
         .route("/healthz", get(healthz))
         .route(
             "/static/margin.css",
@@ -90,6 +100,7 @@ async fn measure(State(s): State<AppState>, req: Request, next: Next) -> Respons
 
 pub enum ApiError {
     Unauthorized,
+    Forbidden,
     NotFound,
     BadRequest(String),
     Busy,
@@ -102,6 +113,10 @@ impl IntoResponse for ApiError {
             ApiError::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
                 "a valid bearer token is required".to_string(),
+            ),
+            ApiError::Forbidden => (
+                StatusCode::FORBIDDEN,
+                "only the reader's own comments can be changed".to_string(),
             ),
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not found".into()),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
@@ -334,16 +349,24 @@ async fn reader(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Html<String>, ApiError> {
-    let collection = s
-        .run(move |conn| store::get(conn, &id))
+    let (collection, all_threads) = s
+        .run(move |conn| {
+            Ok(match store::get(conn, &id)? {
+                Some(c) => Some((threads::all(conn, &id)?, c)),
+                None => None,
+            })
+        })
         .await?
+        .map(|(t, c)| (c, t))
         .ok_or(ApiError::NotFound)?;
     let highlighter = s.highlighter.clone();
     let started = Instant::now();
-    let html = tokio::task::spawn_blocking(move || crate::page::render(&collection, &highlighter))
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let html = tokio::task::spawn_blocking(move || {
+        crate::page::render(&collection, &all_threads, &highlighter)
+    })
+    .await
+    .map_err(|e| ApiError::Internal(e.to_string()))?
+    .map_err(|e| ApiError::Internal(e.to_string()))?;
     s.metrics.push(Event::Render {
         seconds: started.elapsed().as_secs_f64(),
     });
@@ -352,4 +375,229 @@ async fn reader(
 
 async fn healthz() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "sha": crate::BUILD_SHA }))
+}
+
+fn clean_body(body: &str) -> Result<String, ApiError> {
+    let body = body.trim();
+    if body.is_empty() {
+        return Err(ApiError::BadRequest("body must not be empty".into()));
+    }
+    if body.len() > threads::MAX_BODY {
+        return Err(ApiError::BadRequest(format!(
+            "body must be at most {} bytes",
+            threads::MAX_BODY
+        )));
+    }
+    Ok(body.to_string())
+}
+
+fn json_body<T>(
+    body: Result<Json<T>, axum::extract::rejection::JsonRejection>,
+) -> Result<T, ApiError> {
+    body.map(|Json(b)| b)
+        .map_err(|e| ApiError::BadRequest(e.body_text()))
+}
+
+/// The server-rendered thread, open, with the version's marks in `x-margin-marks` when the
+/// write changed them (a thread appeared or went).
+fn fragment(
+    thread: &Thread,
+    marks: Option<&[Mark]>,
+    status: StatusCode,
+) -> Result<Response, ApiError> {
+    let html = crate::page::ThreadFragment {
+        thread: crate::page::ThreadView::new(thread, true),
+    }
+    .render()
+    .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(with_marks((status, Html(html)).into_response(), marks))
+}
+
+fn with_marks(mut resp: Response, marks: Option<&[Mark]>) -> Response {
+    if let Some(marks) = marks {
+        let json = serde_json::to_string(marks).expect("marks serialize");
+        resp.headers_mut().insert(
+            "x-margin-marks",
+            json.parse().expect("marks JSON is plain ASCII"),
+        );
+    }
+    resp
+}
+
+#[derive(Deserialize)]
+struct NewThreadBody {
+    version_id: i64,
+    first_line: u32,
+    last_line: u32,
+    body: String,
+}
+
+async fn create_thread(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    body: Result<Json<NewThreadBody>, axum::extract::rejection::JsonRejection>,
+) -> Result<Response, ApiError> {
+    let b = json_body(body)?;
+    let text = clean_body(&b.body)?;
+    let (thread_id, comment_id) = (margin_core::new_id(&*s.rng), margin_core::new_id(&*s.rng));
+    let now = s.clock.now_unix();
+    let made = s
+        .run(move |conn| {
+            let made = threads::create_thread(
+                conn,
+                &NewThread {
+                    thread_id: &thread_id,
+                    comment_id: &comment_id,
+                    collection_id: &id,
+                    version_id: b.version_id,
+                    anchor: Anchor::lines(b.first_line, b.last_line),
+                    body: &text,
+                    now,
+                },
+            );
+            match made {
+                Ok(t) => Ok(Ok((threads::version_marks(conn, &id, t.version_id)?, t))),
+                Err(CreateError::Db(e)) => Err(e),
+                Err(other) => Ok(Err(other)),
+            }
+        })
+        .await?;
+    match made {
+        Ok((marks, thread)) => fragment(&thread, Some(&marks), StatusCode::CREATED),
+        Err(CreateError::NoVersion) => Err(ApiError::NotFound),
+        Err(CreateError::Anchor(e)) => Err(ApiError::BadRequest(e.to_string())),
+        Err(CreateError::Db(_)) => unreachable!("database errors leave through run"),
+    }
+}
+
+#[derive(Deserialize)]
+struct BodyOnly {
+    body: String,
+}
+
+async fn reply(
+    State(s): State<AppState>,
+    Path((id, tid)): Path<(String, String)>,
+    body: Result<Json<BodyOnly>, axum::extract::rejection::JsonRejection>,
+) -> Result<Response, ApiError> {
+    let text = clean_body(&json_body(body)?.body)?;
+    let comment_id = margin_core::new_id(&*s.rng);
+    let now = s.clock.now_unix();
+    let thread = s
+        .run(move |conn| {
+            threads::add_comment(conn, &id, &tid, &comment_id, threads::READER, &text, now)
+        })
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    fragment(&thread, None, StatusCode::CREATED)
+}
+
+async fn edit_comment(
+    State(s): State<AppState>,
+    Path((id, cid)): Path<(String, String)>,
+    body: Result<Json<BodyOnly>, axum::extract::rejection::JsonRejection>,
+) -> Result<Response, ApiError> {
+    let text = clean_body(&json_body(body)?.body)?;
+    let now = s.clock.now_unix();
+    match s
+        .run(move |conn| threads::edit_comment(conn, &id, &cid, &text, now))
+        .await?
+    {
+        Change::NotFound => Err(ApiError::NotFound),
+        Change::NotYours => Err(ApiError::Forbidden),
+        Change::Done(thread) => fragment(&thread, None, StatusCode::OK),
+    }
+}
+
+/// 200 with the thread when comments remain; 204 with the new marks when the thread went.
+async fn delete_comment(
+    State(s): State<AppState>,
+    Path((id, cid)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    let changed = s
+        .run(move |conn| {
+            let version: Option<i64> = conn
+                .query_row(
+                    "SELECT a.version_id FROM comments c
+                     JOIN threads t ON t.id = c.thread_id
+                     JOIN anchors a ON a.id = t.anchor_id
+                     WHERE c.id = ?1 AND t.collection_id = ?2",
+                    rusqlite::params![cid, id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            Ok(match threads::delete_comment(conn, &id, &cid)? {
+                Change::Done(None) => {
+                    let marks = match version {
+                        Some(v) => threads::version_marks(conn, &id, v)?,
+                        None => Vec::new(),
+                    };
+                    Change::Done((None, marks))
+                }
+                Change::Done(Some(t)) => Change::Done((Some(t), Vec::new())),
+                Change::NotFound => Change::NotFound,
+                Change::NotYours => Change::NotYours,
+            })
+        })
+        .await?;
+    match changed {
+        Change::NotFound => Err(ApiError::NotFound),
+        Change::NotYours => Err(ApiError::Forbidden),
+        Change::Done((Some(thread), _)) => fragment(&thread, None, StatusCode::OK),
+        Change::Done((None, marks)) => Ok(with_marks(
+            StatusCode::NO_CONTENT.into_response(),
+            Some(&marks),
+        )),
+    }
+}
+
+#[derive(Serialize)]
+struct ThreadListing {
+    items: Vec<Thread>,
+    next: Option<String>,
+}
+
+async fn list_threads(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<ListQuery>,
+) -> Result<Json<ThreadListing>, ApiError> {
+    let limit = q.limit.unwrap_or(DEFAULT_PAGE);
+    if limit == 0 || limit > MAX_PAGE {
+        return Err(ApiError::BadRequest(format!(
+            "limit must be 1..={MAX_PAGE}"
+        )));
+    }
+    let after = match q.after {
+        None => None,
+        Some(c) => Some(parse_cursor(&c)?),
+    };
+    let (known, mut items) = s
+        .run(move |conn| {
+            let known = store::get(conn, &id)?.is_some();
+            let items = threads::page(
+                conn,
+                &id,
+                limit + 1,
+                after.as_ref().map(|(a, i)| (*a, i.as_str())),
+            )?;
+            Ok((known, items))
+        })
+        .await?;
+    if !known {
+        return Err(ApiError::NotFound);
+    }
+    let next = if items.len() > limit {
+        items.truncate(limit);
+        items.last().map(|t| format!("{}.{}", t.created_at, t.id))
+    } else {
+        None
+    };
+    Ok(Json(ThreadListing { items, next }))
+}
+
+fn parse_cursor(c: &str) -> Result<(i64, String), ApiError> {
+    let bad = || ApiError::BadRequest("after is not a cursor".into());
+    let (at, id) = c.split_once('.').ok_or_else(bad)?;
+    Ok((at.parse().map_err(|_| bad())?, id.to_string()))
 }
