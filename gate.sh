@@ -10,7 +10,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
 cargo test -p margin --features integration --test http
 
-apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "chromium=${CHROMIUM_VERSION}" >/dev/null
+apt-get update -o Acquire::Retries=3
+if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "chromium=${CHROMIUM_VERSION}" >/dev/null; then
+  echo "gate.sh: chromium ${CHROMIUM_VERSION} did not install; the archive offers:" >&2
+  apt-cache policy chromium >&2
+  cat /etc/apt/sources.list /etc/apt/sources.list.d/* >&2 2>/dev/null || true
+  exit 1
+fi
 
 MARGIN_CHROMIUM="$(command -v chromium)" cargo test -p margin-ui -- --ignored
