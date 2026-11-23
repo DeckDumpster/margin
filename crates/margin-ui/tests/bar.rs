@@ -190,8 +190,10 @@ async fn screenshot(page: &Page, name: &str) {
 }
 
 async fn colour_scheme(page: &Page, scheme: &str) {
-    let mut params = SetEmulatedMediaParams::default();
-    params.features = Some(vec![MediaFeature::new("prefers-color-scheme", scheme)]);
+    let params = SetEmulatedMediaParams {
+        features: Some(vec![MediaFeature::new("prefers-color-scheme", scheme)]),
+        ..Default::default()
+    };
     page.execute(params).await.unwrap();
 }
 
