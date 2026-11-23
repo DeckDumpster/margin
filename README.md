@@ -1,93 +1,154 @@
 # margin
 
-A reader for commenting on whole documents from a phone.
+A place to read a whole document on a phone and write in its margin, with an agent on the other
+end of every comment.
 
-A document is shown whole, with line numbers. A comment anchors on a line, on a range of
-lines, or on selected words, and any number of anchors may cover the same line. Agents post
-documents and comments over HTTP and read a change feed.
+## Why it exists
 
-## Production
+Reviewing an agent's work kept meaning reading it somewhere built for something else. A pull
+request shows a diff, when what needed reading was the whole file. A terminal review tool shows
+the whole file, but only at a desk. A chat window can show neither, and a comment made there
+has no line to hang on.
 
-margin runs on the product host named in `deploy/prod-host`, as the systemd user unit
-`margin.service`. It listens on the host's tailnet address only and has no sign-in: the tailnet
-is the guard, so the server refuses an unspecified listen address (every interface). Its data is
-one SQLite file under `~/.local/share/margin/`.
+margin is the smallest thing that fixes that. An agent posts a set of documents with a note
+saying what to read first. A person opens one link on a phone, reads each document whole, and
+comments on a line, a range of lines or a few selected words. Each comment reaches the agent as
+it is made, and the agent answers in the same thread. When the document is revised, the new
+version appears in the same place with the threads carried to where their lines went.
 
-**Deploy.** Every push to `main` runs `CI` (`.github/workflows/ci.yml`): the gate, then a release
-build with `MARGIN_BUILD_SHA` set, uploaded as the artifact `margin-<sha>`. When CI succeeds,
-`Deploy` (`.github/workflows/deploy.yml`) runs on the `margin-prod` runner on the host, downloads
-that artifact, fast-forwards `~/margin-prod` to the sha, and runs `deploy/deploy.sh`. The host
-never builds; it installs what CI tested, keeps one previous copy as `margin.prev`, renders
-`~/.config/margin/margin.toml` from `deploy/margin.toml.in` with the tailnet address, restarts the
-unit and waits for `/healthz` to report the deployed sha.
+It was built rather than adopted so that changing how the page behaves is a small change in one
+small repository. It serves one reader and a few named agents, on a private network, and it is
+deliberately not a diff viewer, a forge or a multi-user product.
 
-**One-time setup.** Register the runner on the host (the token is single-use and stays out of
-transcripts; the header of `deploy/runner-setup.sh` has the `gh api` command that mints it):
+## What it does
 
-    MARGIN_RUNNER_TOKEN=… MARGIN_RUNNER_VERSION=… deploy/runner-setup.sh
+**For the reader**
 
-**Agents.** An agent posts with a bearer token. On the host:
+- The home page lists open reviews, most recently active first.
+- A review opens as one page: a cover note (rendered markdown), a list of its files, then every
+  file whole, with line numbers and syntax colour. A bar stays at the top once you scroll, with
+  the current file and controls to jump to the top and between files.
+- Tap a line number to comment on that line. Press, hold and drag to comment on a range; the
+  page scrolls under your finger. Select words the phone's usual way to comment on exactly
+  those words.
+- Any number of threads may cover the same line. The margin shows one mark per thread.
+- Replies appear in the thread without a reload.
+- Publish ends your pass. Comments an agent wrote beforehand and held back appear beside yours
+  only then, so its read does not steer yours.
+- Long lines wrap by default; a toggle turns wrapping off and each file then scrolls sideways
+  inside its own frame. The page itself never scrolls sideways.
 
-    margin agent-token add <name> --agents-file ~/.config/margin/agents.toml --token-file <out>
+**For an agent**
 
-writes a fresh token to `<out>` (mode 0600) and its sha256 to the agents file; neither is printed.
+Everything an agent does is plain HTTP with a bearer token.
 
-    curl -H "Authorization: Bearer $(cat <out>)" -H 'Content-Type: application/json' \
-      -d '{"title":"…","cover_note":"…","documents":[{"path":"a.rs","kind":"code","text":"…"}]}' \
-      "$BASE_URL/api/collections"      # → 201 {"id": …, "url": …}
+| Call | What it does |
+|---|---|
+| `POST /api/collections` | open a review: a title, a cover note, and documents (`path`, `kind`, `text`) |
+| `GET /api/collections`, `GET /api/collections/{id}` | list reviews; read one |
+| `PATCH`, `DELETE /api/collections/{id}` | change or remove a review |
+| `POST /api/documents/{id}/versions` | post a new version of a document; threads are carried to it |
+| `GET`, `POST /api/collections/{id}/threads` | read threads; start one on an anchor, shown now or held until publish |
+| `POST /api/threads/{id}/comments` | answer in a thread |
+| `PATCH`, `DELETE /api/comments/{id}` | edit or remove a comment |
+| `GET /api/changes?after=N&wait=S` | the change feed: everything after sequence `N`, held open up to `S` seconds |
 
-**Scratch.** Every deploy also serves a scratch margin: the same binary on the same host and
-tailnet address, port 7341, as `margin-scratch.service`, with its own database
-(`~/.local/share/margin/scratch/`), its own agents file and one agent, `scratch`. Its token is the
-mode-0600 file `~/.config/margin/scratch/token`. A collection posted with that token opens by its
-link and shows on the scratch home page only, never on production's or in its change feed. Whoever
-uses it deletes its collections with `DELETE /api/collections/{id}`; scratch is not backed up.
-Removing the token file makes the next deploy mint a new one.
+The change feed is a long poll, so an agent learns of a comment when it is posted, with nothing
+running on a timer.
 
-**Metrics.** margin pushes OTLP to the `otlp_endpoint` in its config; `deploy/grafana/margin.json`
-is the dashboard.
+```sh
+curl -H "Authorization: Bearer $(cat token-file)" -H 'Content-Type: application/json' \
+  -d '{"title":"…","cover_note":"…","documents":[{"path":"a.rs","kind":"code","text":"…"}]}' \
+  "$BASE_URL/api/collections"      # 201 {"id": …, "url": …}
+```
 
-**Backups.** `margin-backup.timer` runs `margin-backup.service` every 15 minutes: `margin backup`
-takes a consistent snapshot (`VACUUM INTO`, safe beside the running server and its WAL), gzips it
-and uploads it as `margin-<UTC yyyymmddThhmmssZ>.db.gz` to a private, versioned S3 bucket in the CI
-account, then pushes `margin_backup_*` metrics. The key can only `s3:PutObject`: a compromised host
-cannot list, read, overwrite or delete history. Snapshots expire after 180 days.
+## How it is put together
 
-*Plan and apply* (with the `terraform-deploy` role; the bucket is `margin-backups-<account id>`):
+**The model.** A *document* is immutable text with a path, a kind (code or prose) and numbered
+lines; a revision is a new *version* of the same document. A *collection* is an ordered set of
+documents with a cover note and a state: open, published or closed. An *anchor* is a document
+version with a first and last line, and optionally a start and end column for a highlight of
+some words. A *thread* hangs on one anchor and holds *comments*, each with an author (the
+reader, or a named agent) and a visibility (now, or after publish).
 
-    cd infra-backups
-    terraform init -backend-config="bucket=<state bucket>" -backend-config="role_arn=<deploy role>"
-    terraform plan -var deploy_role_arn=<deploy role>
-    terraform apply -var deploy_role_arn=<deploy role>
+**Carrying threads to a new version.** An anchor moves by matching the text of its lines. Where
+the text is gone the thread is kept at the nearest surviving line and says so. A highlight
+follows its exact words, and falls back to its line when the words changed.
 
-*`~/.config/margin/backup.env`* on the host, mode 0600, from the secret `margin/backup` in
-Secrets Manager (do not print it):
+**The page.** Server-rendered HTML, one stylesheet and one script, with no build step. A change
+to the surface is a change to a template.
 
-    AWS_ACCESS_KEY_ID=…
-    AWS_SECRET_ACCESS_KEY=…
-    AWS_DEFAULT_REGION=us-west-2
-    MARGIN_BACKUP_BUCKET=margin-backups-<account id>
+**The server.** One Rust binary and one SQLite file. There is no sign-in: it is meant to listen
+on a private network address, and it refuses to start on an unspecified address (every
+interface). Agents are named in a file of token hashes.
 
-`deploy.sh` enables the timer only once `backup.env` is non-empty; until then it prints on stderr
-that backups are NOT running, and the deploy carries on.
+| Path | Holds |
+|---|---|
+| `crates/margin-core` | anchors, line handling, carrying an anchor to a new version, clock and wait ports |
+| `crates/margin` | the server: store, API, page, change feed, highlighting, backup, metrics |
+| `crates/margin/templates`, `crates/margin/static` | the page, its stylesheet and its script |
+| `crates/margin-ui` | the one browser test: a review is opened, found, read and commented on |
+| `deploy/` | the deploy script, unit files, config template and dashboard |
+| `infra-backups/` | Terraform for the backup bucket |
 
-*Drill.* With your own identity (not the backup key), fetch the newest snapshot and read it back:
+## Running it
 
-    margin restore-drill --bucket margin-backups-<account id>
+```sh
+margin agent-token add <name> --agents-file agents.toml --token-file <out>
+margin serve --config margin.toml
+```
 
-It lists the bucket, takes the newest object by last-modified, unzips it into a temporary
-directory, runs `integrity_check` and `foreign_key_check`, refuses a `user_version` newer than the
-binary, opens it with margin's own code and reads every collection, document and thread. It prints
-the object key, its age and the collection, document, thread and comment counts, and exits
-non-zero on any failure, an empty bucket, or a newest object older than 60 minutes.
+`agent-token add` writes a fresh token to `<out>` (mode 0600) and its hash to the agents file;
+neither is printed. The config has six keys:
 
-*Restore.* Fetch an object with your own identity (`aws s3api get-object --bucket … --key … f.gz`),
-`gunzip f.gz`, then stop the unit, put the restored file in place with its `-wal` and `-shm`
-removed, and start the unit:
+```toml
+listen = "<address>:<port>"        # a specific address, never every interface
+base_url = "http://<name>:<port>"  # what links in API answers start with
+database = "/path/to/margin.db"
+agents_file = "/path/to/agents.toml"
+otlp_endpoint = "http://<collector>"
+instance = "prod"
+```
 
-    systemctl --user stop margin.service
-    rm -f ~/.local/share/margin/margin.db-wal ~/.local/share/margin/margin.db-shm
-    cp f ~/.local/share/margin/margin.db
-    systemctl --user start margin.service
+## Checking a change
+
+```sh
+bash gate.sh
+```
+
+runs formatting, lints, every test, the Terraform checks and the browser test. It fetches a
+pinned Chrome and Terraform once and keeps them under `CARGO_HOME`. Tests sit at the lowest
+level that can see the behaviour: what the server renders is asserted on the handler's response
+in `crates/margin/tests/http.rs`, and the single browser test covers the reader's main path. A
+change to that path adds a step to that test; it does not add another.
+
+## Operating it
+
+**Deploy.** A push to `main` runs `CI`, which builds a release binary stamped with the commit
+and uploads it. `Deploy` then runs on a self-hosted runner on the host named in
+`deploy/prod-host`: it downloads that binary, fast-forwards its checkout and runs
+`deploy/deploy.sh`. The host never builds. The script keeps the previous binary as
+`margin.prev`, renders the config from `deploy/margin.toml.in`, restarts `margin.service` (a
+systemd user unit) and waits for `/healthz` to report the deployed commit.
 
 **Rollback.** `mv ~/.local/lib/margin/margin.prev ~/.local/lib/margin/margin && systemctl --user restart margin`.
+
+**Scratch.** Every deploy also serves a second instance, `margin-scratch.service`, from the same
+binary on the next port, with its own database, agents file and one agent. It is for trying
+things; it is not backed up, and whoever uses it deletes what they post.
+
+**Backups.** `margin-backup.timer` runs `margin backup` every 15 minutes: a consistent snapshot
+of the database, gzipped and uploaded to a private, versioned bucket with a key that can only
+write. `margin restore-drill --bucket <bucket>` fetches the newest snapshot, checks its
+integrity, opens it with margin's own code, reads every collection, and fails if the newest
+snapshot is more than an hour old. To restore, stop the unit, put the unzipped snapshot in
+place of the database with its `-wal` and `-shm` files removed, and start the unit. The bucket
+is defined in `infra-backups/`.
+
+**Metrics.** margin pushes OTLP to `otlp_endpoint`; `deploy/grafana/margin.json` is the
+dashboard.
+
+**First-time setup of a host.** `deploy/runner-setup.sh` registers the deploy runner; its header
+says how to mint the single-use registration token. The backup key (the secret `margin/backup`) goes in
+`~/.config/margin/backup.env` (mode 0600); until that file exists the deploy says on stderr that
+backups are not running, and carries on.
