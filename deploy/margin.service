@@ -1,0 +1,10 @@
+[Unit]
+Description=margin reader
+
+[Service]
+ExecStart=%h/.local/lib/margin/margin serve --config %h/.config/margin/margin.toml
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

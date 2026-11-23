@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    container: docker.io/library/rust:1.99.1-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash gate.sh
+      - name: Build the release binary
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          MARGIN_BUILD_SHA: ${{ github.sha }}
+        run: cargo build --release --locked -p margin
+      - name: Upload the binary the deploy will install
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: margin-${{ github.sha }}
+          path: target/release/margin
+          if-no-files-found: error

@@ -1,0 +1,10 @@
+# Declares margin's gate to testenv, so `testenv --suites gate <branch> margin` runs what CI runs.
+image = "docker.io/library/rust:1.99.1-bookworm"
+workdir = "/work"
+timeout = 2400
+ci_entry = "bash gate.sh"
+default = ["gate"]
+
+[tier.gate]
+argv = ["bash", "gate.sh"]
+timeout = 2400

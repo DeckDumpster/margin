@@ -1,0 +1,33 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+concurrency: margin-deploy
+
+jobs:
+  deploy:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: [self-hosted, margin-prod]
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Fetch the binary CI built and tested
+        uses: actions/download-artifact@v4
+        with:
+          name: margin-${{ github.event.workflow_run.head_sha }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/margin-artifact
+      - name: Fast-forward the production checkout
+        run: |
+          set -euo pipefail
+          cd ~/margin-prod
+          git fetch origin main
+          git merge --ff-only "${{ github.event.workflow_run.head_sha }}"
+      - name: Deploy
+        run: bash ~/margin-prod/deploy/deploy.sh "${{ runner.temp }}/margin-artifact/margin"

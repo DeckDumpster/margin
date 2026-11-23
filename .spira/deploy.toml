@@ -1,0 +1,1 @@
+after_landing = "on the host in deploy/prod-host, margin.service is active and /healthz on its tailnet address reports the landed sha"
