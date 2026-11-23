@@ -226,3 +226,87 @@ async fn the_page_never_scrolls_sideways_on_a_phone_and_remembers_the_wrap_choic
     let _ = pump.await;
     browser.wait().await.unwrap();
 }
+
+const CODE_STYLE: &str = r#"(() => {
+  const sides = ['Top', 'Right', 'Bottom', 'Left'];
+  const bad = new Map();
+  let spans = 0;
+  for (const code of document.querySelectorAll('.code')) {
+    const want = getComputedStyle(code);
+    for (const span of code.querySelectorAll('span')) {
+      spans++;
+      const got = getComputedStyle(span);
+      const margins = sides.map((s) => got['margin' + s]);
+      const ok = got.fontSize === want.fontSize && got.fontWeight === want.fontWeight
+        && got.lineHeight === want.lineHeight && margins.every((m) => m === '0px');
+      if (!ok) {
+        const key = span.className + ' ' + got.fontSize + '/' + got.fontWeight + '/' + got.lineHeight + ' margin ' + margins.join(' ');
+        bad.set(key, (bad.get(key) || 0) + 1);
+      }
+    }
+  }
+  const code = document.querySelector('.code');
+  const colour = (sel) => {
+    const el = [...document.querySelectorAll('.code ' + sel)][0];
+    return el ? getComputedStyle(el).color : null;
+  };
+  const comment = document.querySelector('.code .tok-comment');
+  return {
+    spans,
+    offenders: [...bad].slice(0, 5).map(([k, n]) => k + ' x' + n),
+    path_spans: document.querySelectorAll('.code .tok-path').length,
+    code_colour: getComputedStyle(code).color,
+    keyword_colour: colour('.tok-keyword, .tok-storage'),
+    comment_style: comment ? getComputedStyle(comment).fontStyle : null,
+  };
+})()"#;
+
+#[derive(Debug, serde::Deserialize)]
+struct CodeStyle {
+    spans: u32,
+    offenders: Vec<String>,
+    path_spans: u32,
+    code_colour: String,
+    keyword_colour: Option<String>,
+    comment_style: Option<String>,
+}
+
+#[test_id(tfre3l9)]
+#[tokio::test]
+#[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
+async fn code_tokens_have_their_lines_font_and_no_margin_whatever_their_scope() {
+    let (url, dir) = serve().await;
+    let (mut browser, pump) = support::launch(dir.path()).await;
+    let page = browser.new_page("about:blank").await.unwrap();
+    viewport(&page, PHONE, 844, true).await;
+    page.goto(&url)
+        .await
+        .unwrap()
+        .wait_for_navigation()
+        .await
+        .unwrap();
+    let s: CodeStyle = page
+        .evaluate(CODE_STYLE)
+        .await
+        .unwrap()
+        .into_value()
+        .unwrap();
+
+    assert!(s.spans > 0, "{s:?}");
+    assert!(
+        s.offenders.is_empty(),
+        "spans that differ from their .code (font-size/weight/line-height, margin): {:#?}",
+        s.offenders
+    );
+    assert!(s.path_spans > 0, "no .tok-path span to test: {s:?}");
+    let keyword = s.keyword_colour.as_deref();
+    assert!(
+        keyword.is_some_and(|k| k != s.code_colour),
+        "keywords are not coloured: {s:?}"
+    );
+    assert_eq!(s.comment_style.as_deref(), Some("italic"), "{s:?}");
+
+    browser.close().await.unwrap();
+    let _ = pump.await;
+    browser.wait().await.unwrap();
+}

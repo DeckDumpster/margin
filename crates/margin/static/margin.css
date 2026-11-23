@@ -123,12 +123,12 @@ html:not(.nowrap) .code {
   text-indent: -2ch;
 }
 
-.comment { color: var(--c-comment); font-style: italic; }
-.keyword, .storage { color: var(--c-keyword); }
-.string { color: var(--c-string); }
-.constant.numeric, .constant.language { color: var(--c-number); }
-.entity.name.function, .support.function { color: var(--c-func); }
-.entity.name.type, .entity.name.struct, .entity.name.enum, .support.type, .storage.type { color: var(--c-type); }
+.tok-comment { color: var(--c-comment); font-style: italic; }
+.tok-keyword, .tok-storage { color: var(--c-keyword); }
+.tok-string { color: var(--c-string); }
+.tok-constant.tok-numeric, .tok-constant.tok-language { color: var(--c-number); }
+.tok-entity.tok-name.tok-function, .tok-support.tok-function { color: var(--c-func); }
+.tok-entity.tok-name.tok-type, .tok-entity.tok-name.tok-struct, .tok-entity.tok-name.tok-enum, .tok-support.tok-type, .tok-storage.tok-type { color: var(--c-type); }
 
 /* Highlighted words: each lane's colour tints the run and underlines it at its own height, so
    words two highlights share show both. Lanes past 3 share the last colour, as in the gutter. */

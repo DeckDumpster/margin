@@ -36,8 +36,17 @@ pub fn escape(s: &str) -> String {
     out
 }
 
+/// Scope atoms are classes, and bare ones (`path`, `meta`) would match the page's own rules.
+const CLASS_STYLE: ClassStyle = ClassStyle::SpacedPrefixed { prefix: "tok-" };
+const CLASS_PREFIX: &str = "tok-";
+
 fn open_tag(scope: Scope) -> String {
-    let classes = scope.build_string().replace('.', " ");
+    let classes = scope
+        .build_string()
+        .split('.')
+        .map(|atom| format!("{CLASS_PREFIX}{atom}"))
+        .collect::<Vec<_>>()
+        .join(" ");
     format!("<span class=\"{classes}\">")
 }
 
@@ -73,8 +82,7 @@ impl Highlighter {
                 let ops = parse.parse_line(line, &self.syntaxes).ok()?;
                 let reopen: String = stack.as_slice().iter().map(|s| open_tag(*s)).collect();
                 let (mut html, _delta) =
-                    line_tokens_to_classed_spans(line, &ops, ClassStyle::Spaced, &mut stack)
-                        .ok()?;
+                    line_tokens_to_classed_spans(line, &ops, CLASS_STYLE, &mut stack).ok()?;
                 if let Some(i) = html.rfind('\n') {
                     html.remove(i);
                 }
@@ -205,4 +213,32 @@ pub fn tint(html: &str, segments: &[Segment], threads: &[(u16, String)]) -> Stri
         out.push_str("</span>");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use margin_test_id::test_id;
+
+    #[test_id(t709k1x)]
+    #[test]
+    fn every_class_is_prefixed_including_a_comment_reopened_on_its_second_line() {
+        let text = "use std::mem::size_of;\n/* one\ntwo */\n";
+        let lines = Highlighter::new().lines("a.rs", Kind::Code, text);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        for line in &lines {
+            let mut rest = line.as_str();
+            while let Some(i) = rest.find("class=\"") {
+                rest = &rest[i + 7..];
+                let classes = &rest[..rest.find('"').unwrap()];
+                for class in classes.split(' ') {
+                    assert!(class.starts_with("tok-"), "{class:?} in {line}");
+                }
+            }
+        }
+        assert!(lines[0].contains("tok-path"), "{}", lines[0]);
+        let reopened = lines[2].split("two").next().unwrap();
+        assert!(reopened.contains("tok-comment"), "{}", lines[2]);
+        assert!(lines[1].starts_with(reopened), "{reopened} vs {}", lines[1]);
+    }
 }
