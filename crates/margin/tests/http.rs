@@ -193,9 +193,9 @@ async fn a_rust_document_carries_syntect_classes_and_multiline_spans_stay_balanc
         None,
     )
     .await;
-    assert!(html.contains("class=\"keyword"), "{html}");
-    assert!(html.contains("class=\"comment"), "{html}");
-    assert!(html.contains("class=\"string"), "{html}");
+    assert!(html.contains("class=\"tok-keyword"), "{html}");
+    assert!(html.contains("class=\"tok-comment"), "{html}");
+    assert!(html.contains("class=\"tok-string"), "{html}");
     let body = html.split("<div class=\"lines\"").nth(1).unwrap();
     assert_eq!(
         body.matches("<span").count(),
@@ -1005,7 +1005,7 @@ async fn posting_columns_stores_them_and_the_page_wraps_exactly_those_characters
         runs[0].1
     );
     assert!(
-        runs[0].1.contains("entity name function"),
+        runs[0].1.contains("tok-entity tok-name tok-function"),
         "the function name keeps its syntect classes: {}",
         runs[0].1
     );
