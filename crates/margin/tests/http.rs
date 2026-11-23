@@ -1361,6 +1361,26 @@ mod home {
         assert!(!html.contains("opaque"), "{html}");
     }
 
+    #[test_id(tl2varx)]
+    #[tokio::test]
+    async fn an_exact_id_wins_over_the_same_digits_as_a_number() {
+        let h = harness();
+        collection(&h, "2", "Digit id", "", "ada", 10).await; // number 1
+        collection(&h, "x", "Other", "", "ada", 20).await; // number 2
+        let page = get(&h, "/c/2").await;
+        assert!(page.contains("data-collection=\"2\""), "{page}");
+        assert!(page.contains("#1 Digit id"), "{page}");
+        let (s, _) = send(
+            &h.app,
+            Method::GET,
+            "/c/99999999999999999999999",
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+
     #[test_id(t4ht1bn)]
     #[tokio::test]
     async fn collections_are_ordered_by_their_latest_activity() {
@@ -2216,14 +2236,26 @@ async fn two_creations_answer_consecutive_numbers_and_read_and_list_return_them(
     assert_eq!(read["number"], 2);
     let (_, body) = send(&h.app, Method::GET, "/api/collections", None, None).await;
     let listed: Value = serde_json::from_str(&body).unwrap();
-    let numbers: Vec<i64> = listed["items"]
+    let pairs: Vec<(String, i64)> = listed["items"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|i| i["number"].as_i64().unwrap())
+        .map(|i| {
+            (
+                i["id"].as_str().unwrap().to_string(),
+                i["number"].as_i64().unwrap(),
+            )
+        })
         .collect();
-    assert_eq!(numbers.len(), 2);
-    assert!(numbers.contains(&1) && numbers.contains(&2), "{numbers:?}");
+    assert_eq!(pairs.len(), 2);
+    assert!(
+        pairs.contains(&(a["id"].as_str().unwrap().to_string(), 1)),
+        "{pairs:?}"
+    );
+    assert!(
+        pairs.contains(&(b["id"].as_str().unwrap().to_string(), 2)),
+        "{pairs:?}"
+    );
 }
 
 #[test_id(tqs1s1x)]
