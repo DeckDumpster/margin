@@ -19,7 +19,11 @@ use crate::db::{Db, DbError};
 use crate::highlight::Highlighter;
 use crate::metrics::{Event, Metrics};
 use crate::store::{self, NewCollection, NewDocument, Patch};
-use crate::threads::{self, Change, CreateError, Deleted, Mark, NewThread, Thread};
+use crate::changes::{self, View};
+use crate::feed::{self, Probe};
+use crate::threads::{
+    self, Change, CreateError, Deleted, Mark, NewThread, Published, Scope, Thread, Visibility,
+};
 use askama::Template;
 use margin_core::anchor::Anchor;
 
@@ -40,13 +44,26 @@ pub struct AppState {
 }
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    // Every route but the two feeds answers within REQUEST_DEADLINE. A feed call is held open
+    // on purpose, up to `feed::MAX_WAIT`, and bounds itself.
+    let bounded = Router::new()
         .route("/api/collections", get(list).post(create))
         .route(
             "/api/collections/{id}",
             get(read).patch(update).delete(remove),
         )
+        .route(
+            "/api/collections/{id}/threads",
+            get(agent_list_threads).post(agent_create_thread),
+        )
+        .route("/api/threads/{tid}", get(agent_thread))
+        .route("/api/threads/{tid}/comments", post(agent_reply))
+        .route(
+            "/api/comments/{cid}",
+            patch(agent_edit_comment).delete(agent_delete_comment),
+        )
         .route("/c/{id}", get(reader))
+        .route("/c/{id}/publish", post(publish))
         .route("/c/{id}/threads", get(list_threads).post(create_thread))
         .route("/c/{id}/threads/{tid}/comments", post(reply))
         .route(
@@ -72,11 +89,16 @@ pub fn router(state: AppState) -> Router {
                 )
             }),
         )
-        .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::GATEWAY_TIMEOUT,
             REQUEST_DEADLINE,
-        ))
+        ));
+    let feeds = Router::new()
+        .route("/api/changes", get(agent_changes))
+        .route("/c/{id}/changes", get(page_changes));
+    bounded
+        .merge(feeds)
+        .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .layer(middleware::from_fn_with_state(state.clone(), measure))
         .with_state(state)
 }
@@ -100,6 +122,7 @@ async fn measure(State(s): State<AppState>, req: Request, next: Next) -> Respons
 pub enum ApiError {
     Unauthorized,
     Forbidden,
+    Conflict(String),
     NotFound,
     BadRequest(String),
     Busy,
@@ -115,8 +138,9 @@ impl IntoResponse for ApiError {
             ),
             ApiError::Forbidden => (
                 StatusCode::FORBIDDEN,
-                "only the reader's own comments can be changed".to_string(),
+                "only a comment's own author can change it".to_string(),
             ),
+            ApiError::Conflict(m) => (StatusCode::CONFLICT, m),
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not found".into()),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             ApiError::Busy => (StatusCode::SERVICE_UNAVAILABLE, "busy, try again".into()),
@@ -146,6 +170,30 @@ impl AppState {
             }
             other => ApiError::Internal(other.to_string()),
         }
+    }
+
+    /// Record how long a feed call was held and how old each change in its answer was.
+    fn feed_answered(&self, started: Instant, rows: &[changes::Row]) {
+        self.metrics.push(Event::FeedWait {
+            seconds: started.elapsed().as_secs_f64(),
+        });
+        let now = self.clock.now_unix();
+        for r in rows {
+            self.metrics.push(Event::FeedLag {
+                seconds: (now - r.at).max(0) as f64,
+            });
+        }
+    }
+
+    fn comment_written(&self, author: &str, visibility: Visibility) {
+        self.metrics.push(Event::Comment {
+            author_kind: if author == threads::READER {
+                "reader"
+            } else {
+                "agent"
+            },
+            visibility: visibility.as_str(),
+        });
     }
 
     async fn run<T: Send + 'static>(
@@ -348,20 +396,23 @@ async fn reader(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Html<String>, ApiError> {
-    let (collection, all_threads) = s
+    // The sequence number is read before the threads, so a change that lands in between is
+    // delivered again by the feed rather than missed.
+    let (seq, collection, all_threads) = s
         .run(move |conn| {
+            let seq = changes::newest(conn)?;
             Ok(match store::get(conn, &id)? {
-                Some(c) => Some((threads::all(conn, &id)?, c)),
+                Some(c) => Some((seq, threads::all(conn, Scope::Reader, &id)?, c)),
                 None => None,
             })
         })
         .await?
-        .map(|(t, c)| (c, t))
+        .map(|(seq, t, c)| (seq, c, t))
         .ok_or(ApiError::NotFound)?;
     let highlighter = s.highlighter.clone();
     let started = Instant::now();
     let html = tokio::task::spawn_blocking(move || {
-        crate::page::render(&collection, &all_threads, &highlighter)
+        crate::page::render(&collection, &all_threads, seq, &highlighter)
     })
     .await
     .map_err(|e| ApiError::Internal(e.to_string()))?
@@ -466,6 +517,8 @@ async fn create_thread(
                         last: b.last_line,
                         cols,
                     },
+                    author: threads::READER,
+                    visibility: Visibility::Now,
                     body: &text,
                     now,
                 },
@@ -478,7 +531,10 @@ async fn create_thread(
         })
         .await?;
     match made {
-        Ok((marks, thread)) => fragment(&thread, Some(&marks), StatusCode::CREATED),
+        Ok((marks, thread)) => {
+            s.comment_written(threads::READER, Visibility::Now);
+            fragment(&thread, Some(&marks), StatusCode::CREATED)
+        }
         Err(CreateError::NoVersion) => Err(ApiError::NotFound),
         Err(CreateError::Anchor(e)) => Err(ApiError::BadRequest(e.to_string())),
         Err(CreateError::Db(_)) => unreachable!("database errors leave through run"),
@@ -500,10 +556,20 @@ async fn reply(
     let now = s.clock.now_unix();
     let thread = s
         .run(move |conn| {
-            threads::add_comment(conn, &id, &tid, &comment_id, threads::READER, &text, now)
+            threads::add_comment(
+                conn,
+                &id,
+                &tid,
+                &comment_id,
+                threads::READER,
+                Visibility::Now,
+                &text,
+                now,
+            )
         })
         .await?
         .ok_or(ApiError::NotFound)?;
+    s.comment_written(threads::READER, Visibility::Now);
     fragment(&thread, None, StatusCode::CREATED)
 }
 
@@ -515,7 +581,7 @@ async fn edit_comment(
     let text = clean_body(&json_body(body)?.body)?;
     let now = s.clock.now_unix();
     match s
-        .run(move |conn| threads::edit_comment(conn, &id, &cid, &text, now))
+        .run(move |conn| threads::edit_comment(conn, Some(&id), threads::READER, &cid, &text, now))
         .await?
     {
         Change::NotFound => Err(ApiError::NotFound),
@@ -529,8 +595,9 @@ async fn delete_comment(
     State(s): State<AppState>,
     Path((id, cid)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
+    let now = s.clock.now_unix();
     match s
-        .run(move |conn| threads::delete_comment(conn, &id, &cid))
+        .run(move |conn| threads::delete_comment(conn, Some(&id), threads::READER, &cid, now))
         .await?
     {
         Change::NotFound => Err(ApiError::NotFound),
@@ -554,6 +621,15 @@ async fn list_threads(
     Path(id): Path<String>,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<ThreadListing>, ApiError> {
+    threads_listing(&s, Scope::Reader, id, q).await
+}
+
+async fn threads_listing(
+    s: &AppState,
+    scope: Scope,
+    id: String,
+    q: ListQuery,
+) -> Result<Json<ThreadListing>, ApiError> {
     let limit = q.limit.unwrap_or(DEFAULT_PAGE);
     if limit == 0 || limit > MAX_PAGE {
         return Err(ApiError::BadRequest(format!(
@@ -569,6 +645,7 @@ async fn list_threads(
             let known = store::get(conn, &id)?.is_some();
             let items = threads::page(
                 conn,
+                scope,
                 &id,
                 limit + 1,
                 after.as_ref().map(|(a, i)| (*a, i.as_str())),
@@ -592,4 +669,383 @@ fn parse_cursor(c: &str) -> Result<(i64, String), ApiError> {
     let bad = || ApiError::BadRequest("after is not a cursor".into());
     let (at, id) = c.split_once('.').ok_or_else(bad)?;
     Ok((at.parse().map_err(|_| bad())?, id.to_string()))
+}
+
+#[derive(Deserialize)]
+struct AgentThreadBody {
+    path: String,
+    first_line: u32,
+    last_line: u32,
+    start_col: Option<u32>,
+    end_col: Option<u32>,
+    body: String,
+    #[serde(default)]
+    held: bool,
+}
+
+#[derive(Deserialize)]
+struct AgentCommentBody {
+    body: String,
+    #[serde(default)]
+    held: bool,
+}
+
+fn visibility(held: bool) -> Visibility {
+    if held {
+        Visibility::Held
+    } else {
+        Visibility::Now
+    }
+}
+
+/// Start a thread on the latest version of the document at `path`.
+async fn agent_create_thread(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Result<Json<AgentThreadBody>, axum::extract::rejection::JsonRejection>,
+) -> Result<(StatusCode, Json<Thread>), ApiError> {
+    let agent = s.agent(&headers).await?;
+    let b = json_body(body)?;
+    let text = clean_body(&b.body)?;
+    if b.start_col.is_some() != b.end_col.is_some() {
+        return Err(ApiError::BadRequest(
+            "start_col and end_col come together".into(),
+        ));
+    }
+    let anchor = Anchor {
+        first: b.first_line,
+        last: b.last_line,
+        cols: b.start_col.zip(b.end_col),
+    };
+    let held = visibility(b.held);
+    let (thread_id, comment_id) = (margin_core::new_id(&*s.rng), margin_core::new_id(&*s.rng));
+    let now = s.clock.now_unix();
+    let who = agent.clone();
+    let made = s
+        .run(move |conn| {
+            let Some(version_id) = threads::latest_version(conn, &id, &b.path)? else {
+                return Ok(Err(CreateError::NoVersion));
+            };
+            match threads::create_thread(
+                conn,
+                &NewThread {
+                    thread_id: &thread_id,
+                    comment_id: &comment_id,
+                    collection_id: &id,
+                    version_id,
+                    anchor,
+                    author: &who,
+                    visibility: held,
+                    body: &text,
+                    now,
+                },
+            ) {
+                Ok(t) => Ok(Ok(t)),
+                Err(CreateError::Db(e)) => Err(e),
+                Err(other) => Ok(Err(other)),
+            }
+        })
+        .await?;
+    match made {
+        Ok(thread) => {
+            s.comment_written(&agent, held);
+            Ok((StatusCode::CREATED, Json(thread)))
+        }
+        Err(CreateError::NoVersion) => Err(ApiError::NotFound),
+        Err(CreateError::Anchor(e)) => Err(ApiError::BadRequest(e.to_string())),
+        Err(CreateError::Db(_)) => unreachable!("database errors leave through run"),
+    }
+}
+
+async fn agent_reply(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(tid): Path<String>,
+    body: Result<Json<AgentCommentBody>, axum::extract::rejection::JsonRejection>,
+) -> Result<(StatusCode, Json<Thread>), ApiError> {
+    let agent = s.agent(&headers).await?;
+    let b = json_body(body)?;
+    let text = clean_body(&b.body)?;
+    let held = visibility(b.held);
+    let comment_id = margin_core::new_id(&*s.rng);
+    let now = s.clock.now_unix();
+    let who = agent.clone();
+    let thread = s
+        .run(move |conn| {
+            let Some(id) = threads::collection_of(conn, &tid)? else {
+                return Ok(None);
+            };
+            threads::add_comment(conn, &id, &tid, &comment_id, &who, held, &text, now)
+        })
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    s.comment_written(&agent, held);
+    Ok((StatusCode::CREATED, Json(thread)))
+}
+
+async fn agent_thread(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(tid): Path<String>,
+) -> Result<Json<Thread>, ApiError> {
+    s.agent(&headers).await?;
+    s.run(move |conn| match threads::collection_of(conn, &tid)? {
+        Some(id) => threads::get(conn, Scope::Agent, &id, &tid),
+        None => Ok(None),
+    })
+    .await?
+    .map(Json)
+    .ok_or(ApiError::NotFound)
+}
+
+async fn agent_list_threads(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(q): Query<ListQuery>,
+) -> Result<Json<ThreadListing>, ApiError> {
+    s.agent(&headers).await?;
+    threads_listing(&s, Scope::Agent, id, q).await
+}
+
+async fn agent_edit_comment(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(cid): Path<String>,
+    body: Result<Json<BodyOnly>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<Thread>, ApiError> {
+    let agent = s.agent(&headers).await?;
+    let text = clean_body(&json_body(body)?.body)?;
+    let now = s.clock.now_unix();
+    match s
+        .run(move |conn| threads::edit_comment(conn, None, &agent, &cid, &text, now))
+        .await?
+    {
+        Change::NotFound => Err(ApiError::NotFound),
+        Change::NotYours => Err(ApiError::Forbidden),
+        Change::Done(thread) => Ok(Json(thread)),
+    }
+}
+
+async fn agent_delete_comment(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(cid): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let agent = s.agent(&headers).await?;
+    let now = s.clock.now_unix();
+    match s
+        .run(move |conn| threads::delete_comment(conn, None, &agent, &cid, now))
+        .await?
+    {
+        Change::NotFound => Err(ApiError::NotFound),
+        Change::NotYours => Err(ApiError::Forbidden),
+        Change::Done(_) => Ok(StatusCode::NO_CONTENT),
+    }
+}
+
+/// The reader taps Publish: every held comment of the collection appears beside his.
+async fn publish(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let now = s.clock.now_unix();
+    match s.run(move |conn| threads::publish(conn, &id, now)).await? {
+        Published::NotFound => Err(ApiError::NotFound),
+        Published::Closed => Err(ApiError::Conflict(
+            "a closed collection cannot be published".into(),
+        )),
+        Published::Done(released) => Ok(Json(
+            serde_json::json!({ "state": "published", "released": released }),
+        )),
+    }
+}
+
+#[derive(Deserialize)]
+struct FeedQuery {
+    after: Option<i64>,
+    wait: Option<u64>,
+}
+
+impl FeedQuery {
+    fn after(&self) -> i64 {
+        self.after.unwrap_or(0).max(0)
+    }
+
+    fn wait(&self) -> Duration {
+        feed::clamp_wait(self.wait.unwrap_or(0))
+    }
+}
+
+#[derive(Serialize)]
+struct AgentFeed {
+    changes: Vec<changes::Row>,
+    last_seq: i64,
+}
+
+/// Every change after `after`; held open up to `wait` seconds (at most 30) when there is none.
+async fn agent_changes(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<FeedQuery>,
+) -> Result<Json<AgentFeed>, ApiError> {
+    s.agent(&headers).await?;
+    let after = q.after();
+    let started = Instant::now();
+    let batch = feed::long_poll(s.db.notifier(), q.wait(), || {
+        let s = s.clone();
+        async move {
+            let b = s
+                .run(move |conn| changes::read(conn, View::Agent, after))
+                .await?;
+            Ok::<_, ApiError>(if b.rows.is_empty() {
+                Probe::Empty(b)
+            } else {
+                Probe::Ready(b)
+            })
+        }
+    })
+    .await?;
+    s.feed_answered(started, &batch.rows);
+    Ok(Json(AgentFeed {
+        changes: batch.rows,
+        last_seq: batch.last_seq,
+    }))
+}
+
+#[derive(Serialize)]
+struct PageThread {
+    id: String,
+    version_id: i64,
+    last_line: u32,
+    /// The rendered `thread.html`, closed.
+    html: String,
+}
+
+#[derive(Serialize)]
+struct VersionMarks {
+    version_id: i64,
+    marks: Vec<Mark>,
+}
+
+#[derive(Serialize)]
+struct PageFeed {
+    last_seq: i64,
+    state: String,
+    /// Threads to put on the page, each replacing the one it has there or going in after its
+    /// last line.
+    threads: Vec<PageThread>,
+    /// Threads the reader can no longer see.
+    gone: Vec<String>,
+    /// The marks of each version, when anything changed.
+    marks: Vec<VersionMarks>,
+}
+
+/// What one look at a collection's feed found, before the threads are rendered.
+struct PageLook {
+    last_seq: i64,
+    state: String,
+    changed: bool,
+    threads: Vec<Thread>,
+    gone: Vec<String>,
+    marks: Vec<(i64, Vec<Mark>)>,
+    rows: Vec<changes::Row>,
+}
+
+fn look(conn: &mut rusqlite::Connection, id: &str, after: i64) -> rusqlite::Result<Option<PageLook>> {
+    let state: Option<String> = rusqlite::OptionalExtension::optional(conn.query_row(
+        "SELECT state FROM collections WHERE id = ?1",
+        [id],
+        |r| r.get(0),
+    ))?;
+    let Some(state) = state else { return Ok(None) };
+    let batch = changes::read(conn, View::Page(id), after)?;
+    let mut look = PageLook {
+        last_seq: batch.last_seq,
+        state,
+        changed: !batch.rows.is_empty(),
+        threads: Vec::new(),
+        gone: Vec::new(),
+        marks: Vec::new(),
+        rows: Vec::new(),
+    };
+    if look.changed {
+        let mut seen = std::collections::HashSet::new();
+        let touched: Vec<&str> = batch
+            .rows
+            .iter()
+            .filter_map(|r| r.thread_id.as_deref())
+            .filter(|t| seen.insert(*t))
+            .collect();
+        look.threads = if batch.rows.iter().any(|r| r.kind == "published") {
+            threads::all(conn, Scope::Reader, id)?
+        } else {
+            let mut found = Vec::new();
+            for t in &touched {
+                found.extend(threads::get(conn, Scope::Reader, id, t)?);
+            }
+            found
+        };
+        look.gone = touched
+            .iter()
+            .filter(|t| !look.threads.iter().any(|f| f.id == **t))
+            .map(|t| t.to_string())
+            .collect();
+        look.marks = threads::collection_marks(conn, id)?;
+    }
+    look.rows = batch.rows;
+    Ok(Some(look))
+}
+
+/// The reader page's feed of its own collection: no held comment, nor any change to one.
+async fn page_changes(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<FeedQuery>,
+) -> Result<Json<PageFeed>, ApiError> {
+    let after = q.after();
+    let started = Instant::now();
+    let found = feed::long_poll(s.db.notifier(), q.wait(), || {
+        let s = s.clone();
+        let id = id.clone();
+        async move {
+            let look = s.run(move |conn| look(conn, &id, after)).await?;
+            Ok::<_, ApiError>(match look {
+                None => return Err(ApiError::NotFound),
+                Some(l) if l.changed => Probe::Ready(l),
+                Some(l) => Probe::Empty(l),
+            })
+        }
+    })
+    .await?;
+    s.feed_answered(started, &found.rows);
+    let threads = found
+        .threads
+        .iter()
+        .map(|t| {
+            let html = crate::page::ThreadFragment {
+                thread: crate::page::ThreadView::new(t, false),
+            }
+            .render()
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+            Ok(PageThread {
+                id: t.id.clone(),
+                version_id: t.version_id,
+                last_line: t.last_line,
+                html,
+            })
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
+    Ok(Json(PageFeed {
+        last_seq: found.last_seq,
+        state: found.state,
+        threads,
+        gone: found.gone,
+        marks: found
+            .marks
+            .into_iter()
+            .map(|(version_id, marks)| VersionMarks { version_id, marks })
+            .collect(),
+    }))
 }

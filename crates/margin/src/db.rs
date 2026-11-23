@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::Connection;
 
+use crate::feed::Notifier;
+
 /// Jobs that may wait for a connection; a full queue answers 503.
 pub const QUEUE_CAPACITY: usize = 64;
 /// Connections, one per thread.
@@ -15,6 +17,7 @@ pub const WORKERS: usize = 4;
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_collections.sql"),
     include_str!("../migrations/0002_threads.sql"),
+    include_str!("../migrations/0003_changes.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send>;
@@ -41,6 +44,11 @@ impl std::error::Error for DbError {}
 #[derive(Clone)]
 pub struct Db {
     tx: SyncSender<Job>,
+    notifier: Notifier,
+}
+
+fn newest_change(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM changes", [], |r| r.get(0))
 }
 
 fn connect(path: &Path) -> rusqlite::Result<Connection> {
@@ -71,6 +79,7 @@ impl Db {
     pub fn open_with(path: &Path, workers: usize, capacity: usize) -> Result<Db, DbError> {
         let mut first = connect(path).map_err(|e| DbError::Open(e.to_string()))?;
         migrate(&mut first).map_err(|e| DbError::Open(e.to_string()))?;
+        let notifier = Notifier::new(newest_change(&first).map_err(|e| DbError::Open(e.to_string()))?);
         let (tx, rx) = sync_channel::<Job>(capacity);
         let rx: Arc<Mutex<Receiver<Job>>> = Arc::new(Mutex::new(rx));
         let mut conns = vec![first];
@@ -79,6 +88,7 @@ impl Db {
         }
         for (n, mut conn) in conns.into_iter().enumerate() {
             let rx = rx.clone();
+            let notifier = notifier.clone();
             std::thread::Builder::new()
                 .name(format!("margin-db-{n}"))
                 .spawn(move || {
@@ -88,14 +98,29 @@ impl Db {
                             Err(_) => return,
                         };
                         match job {
-                            Ok(job) => job(&mut conn),
+                            Ok(job) => {
+                                // A job that wrote has committed by the time it returns; tell
+                                // the long-polls what the newest change is.
+                                let before = conn.total_changes();
+                                job(&mut conn);
+                                if conn.total_changes() != before
+                                    && let Ok(seq) = newest_change(&conn)
+                                {
+                                    notifier.publish(seq);
+                                }
+                            }
                             Err(_) => return,
                         }
                     }
                 })
                 .map_err(|e| DbError::Open(e.to_string()))?;
         }
-        Ok(Db { tx })
+        Ok(Db { tx, notifier })
+    }
+
+    /// Where the long-polls wait for the next change.
+    pub fn notifier(&self) -> &Notifier {
+        &self.notifier
     }
 
     /// Queue `f` for a connection thread and await its result. Never blocks the caller's thread.

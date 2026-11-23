@@ -3,8 +3,10 @@
 
 pub mod agents;
 pub mod api;
+pub mod changes;
 pub mod config;
 pub mod db;
+pub mod feed;
 pub mod highlight;
 pub mod metrics;
 pub mod page;

@@ -79,6 +79,9 @@ pub struct Page {
     pub id: String,
     pub title: String,
     pub state: &'static str,
+    pub can_publish: bool,
+    /// The newest change this page shows; its feed asks for what came after.
+    pub seq: i64,
     pub cover_note: String,
     pub docs: Vec<DocView>,
 }
@@ -111,6 +114,7 @@ pub const JS: &str = include_str!("../static/margin.js");
 pub fn render(
     c: &Collection,
     all_threads: &[threads::Thread],
+    seq: i64,
     highlighter: &Highlighter,
 ) -> Result<String, askama::Error> {
     let docs = c
@@ -163,6 +167,8 @@ pub fn render(
         id: c.id.clone(),
         title: c.title.clone(),
         state: c.state.as_str(),
+        can_publish: c.state != crate::store::State::Closed,
+        seq,
         cover_note: c.cover_note.clone(),
         docs,
     }

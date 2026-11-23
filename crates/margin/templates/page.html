@@ -7,10 +7,11 @@
 <script src="/static/margin.js"></script>
 <link rel="stylesheet" href="/static/margin.css">
 </head>
-<body data-collection="{{ id }}">
+<body data-collection="{{ id }}" data-seq="{{ seq }}">
 <header class="top">
 <h1 class="title">{{ title }}</h1>
 <button type="button" id="wrap-toggle" aria-pressed="true">Wrap: on</button>
+<button type="button" id="publish"{% if !can_publish %} hidden{% endif %}>Publish</button>
 </header>
 <p class="meta">{{ state }} · {{ docs.len() }} document{% if docs.len() != 1 %}s{% endif %}</p>
 {% if !cover_note.is_empty() %}<section class="cover">{{ cover_note }}</section>{% endif %}

@@ -3,18 +3,84 @@
 
 use margin_core::anchor::{self, Anchor, AnchorError};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+use crate::changes::{self, Kind, Logged};
 
 /// The author value of every comment written from the reader page.
 pub const READER: &str = "reader";
 /// Longest comment body accepted, in bytes.
 pub const MAX_BODY: usize = 20_000;
 
+/// Whether a comment is on the reader's page now or held back until he publishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Visibility {
+    Now,
+    Held,
+}
+
+impl Visibility {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Visibility::Now => "now",
+            Visibility::Held => "held",
+        }
+    }
+    fn parse(s: &str) -> rusqlite::Result<Visibility> {
+        match s {
+            "now" => Ok(Visibility::Now),
+            "held" => Ok(Visibility::Held),
+            other => Err(rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                format!("unknown visibility {other:?} in the database").into(),
+            )),
+        }
+    }
+}
+
+/// Whose eyes a read is for. The reader never sees a held comment, nor a thread with no other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    Reader,
+    Agent,
+}
+
+impl Scope {
+    /// The scope of whoever wrote as `author`.
+    pub fn of(author: &str) -> Scope {
+        if author == READER {
+            Scope::Reader
+        } else {
+            Scope::Agent
+        }
+    }
+
+    /// SQL over `t`, the threads table, true for the threads this scope can see.
+    fn threads(self) -> &'static str {
+        match self {
+            Scope::Agent => "1",
+            Scope::Reader => {
+                "EXISTS (SELECT 1 FROM comments vc WHERE vc.thread_id = t.id AND vc.visibility = 'now')"
+            }
+        }
+    }
+
+    fn comments(self) -> &'static str {
+        match self {
+            Scope::Agent => "1",
+            Scope::Reader => "visibility = 'now'",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Comment {
     pub id: String,
     pub author: String,
     pub body: String,
+    pub visibility: Visibility,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -75,8 +141,35 @@ pub struct NewThread<'a> {
     pub collection_id: &'a str,
     pub version_id: i64,
     pub anchor: Anchor,
+    pub author: &'a str,
+    pub visibility: Visibility,
     pub body: &'a str,
     pub now: i64,
+}
+
+/// The latest version of the document at `path` in the collection.
+pub fn latest_version(
+    conn: &Connection,
+    collection_id: &str,
+    path: &str,
+) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT v.id FROM versions v JOIN documents d ON d.id = v.document_id
+         WHERE d.collection_id = ?1 AND d.path = ?2 ORDER BY v.number DESC LIMIT 1",
+        params![collection_id, path],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+/// The collection a thread belongs to.
+pub fn collection_of(conn: &Connection, thread_id: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT collection_id FROM threads WHERE id = ?1",
+        [thread_id],
+        |r| r.get(0),
+    )
+    .optional()
 }
 
 pub fn create_thread(conn: &mut Connection, t: &NewThread) -> Result<Thread, CreateError> {
@@ -110,12 +203,31 @@ pub fn create_thread(conn: &mut Connection, t: &NewThread) -> Result<Thread, Cre
         params![t.thread_id, t.collection_id, anchor_id, t.now],
     )?;
     tx.execute(
-        "INSERT INTO comments (id, thread_id, author, body, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
-        params![t.comment_id, t.thread_id, READER, t.body, t.now],
+        "INSERT INTO comments (id, thread_id, author, body, visibility, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+        params![
+            t.comment_id,
+            t.thread_id,
+            t.author,
+            t.body,
+            t.visibility.as_str(),
+            t.now
+        ],
+    )?;
+    changes::record(
+        &tx,
+        &Logged {
+            collection_id: t.collection_id,
+            kind: Kind::ThreadCreated,
+            thread_id: Some(t.thread_id),
+            comment_id: Some(t.comment_id),
+            comment: Some((t.author, t.visibility.as_str())),
+            at: t.now,
+        },
     )?;
     tx.commit()?;
-    Ok(get(conn, t.collection_id, t.thread_id)?.expect("the thread was just inserted"))
+    Ok(get(conn, Scope::of(t.author), t.collection_id, t.thread_id)?
+        .expect("the thread was just inserted"))
 }
 
 const THREAD_COLUMNS: &str =
@@ -141,21 +253,23 @@ fn comment_row(r: &rusqlite::Row) -> rusqlite::Result<(String, Comment)> {
             id: r.get(1)?,
             author: r.get(2)?,
             body: r.get(3)?,
-            created_at: r.get(4)?,
-            updated_at: r.get(5)?,
+            visibility: Visibility::parse(&r.get::<_, String>(4)?)?,
+            created_at: r.get(5)?,
+            updated_at: r.get(6)?,
         },
     ))
 }
 
 /// Attach each thread's comments, oldest first, with one query for all of them.
-fn fill_comments(conn: &Connection, threads: &mut [Thread]) -> rusqlite::Result<()> {
+fn fill_comments(conn: &Connection, scope: Scope, threads: &mut [Thread]) -> rusqlite::Result<()> {
     if threads.is_empty() {
         return Ok(());
     }
     let marks = vec!["?"; threads.len()].join(",");
     let mut stmt = conn.prepare(&format!(
-        "SELECT thread_id, id, author, body, created_at, updated_at FROM comments
-         WHERE thread_id IN ({marks}) ORDER BY created_at, id"
+        "SELECT thread_id, id, author, body, visibility, created_at, updated_at FROM comments
+         WHERE thread_id IN ({marks}) AND {} ORDER BY created_at, id",
+        scope.comments()
     ))?;
     let ids: Vec<&str> = threads.iter().map(|t| t.id.as_str()).collect();
     let rows = stmt
@@ -171,6 +285,7 @@ fn fill_comments(conn: &Connection, threads: &mut [Thread]) -> rusqlite::Result<
 
 pub fn get(
     conn: &Connection,
+    scope: Scope,
     collection_id: &str,
     thread_id: &str,
 ) -> rusqlite::Result<Option<Thread>> {
@@ -178,7 +293,8 @@ pub fn get(
         .query_row(
             &format!(
                 "SELECT {THREAD_COLUMNS} FROM threads t JOIN anchors a ON a.id = t.anchor_id
-                 WHERE t.id = ?1 AND t.collection_id = ?2"
+                 WHERE t.id = ?1 AND t.collection_id = ?2 AND {}",
+                scope.threads()
             ),
             params![thread_id, collection_id],
             thread_row,
@@ -186,7 +302,7 @@ pub fn get(
         .optional()?;
     let Some(t) = found else { return Ok(None) };
     let mut one = [t];
-    fill_comments(conn, &mut one)?;
+    fill_comments(conn, scope, &mut one)?;
     let [t] = one;
     Ok(Some(t))
 }
@@ -194,6 +310,7 @@ pub fn get(
 /// Keyset page, oldest first. `after` is the (created_at, id) of the last row already seen.
 pub fn page(
     conn: &Connection,
+    scope: Scope,
     collection_id: &str,
     limit: usize,
     after: Option<(i64, &str)>,
@@ -201,8 +318,9 @@ pub fn page(
     let (after_at, after_id) = after.unwrap_or((i64::MIN, ""));
     let mut stmt = conn.prepare(&format!(
         "SELECT {THREAD_COLUMNS} FROM threads t JOIN anchors a ON a.id = t.anchor_id
-         WHERE t.collection_id = ?1 AND (t.created_at, t.id) > (?2, ?3)
-         ORDER BY t.created_at, t.id LIMIT ?4"
+         WHERE t.collection_id = ?1 AND (t.created_at, t.id) > (?2, ?3) AND {}
+         ORDER BY t.created_at, t.id LIMIT ?4",
+        scope.threads()
     ))?;
     let mut threads = stmt
         .query_map(
@@ -210,20 +328,25 @@ pub fn page(
             thread_row,
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    fill_comments(conn, &mut threads)?;
+    fill_comments(conn, scope, &mut threads)?;
     Ok(threads)
 }
 
 /// Every thread of a collection, oldest first.
-pub fn all(conn: &Connection, collection_id: &str) -> rusqlite::Result<Vec<Thread>> {
+pub fn all(
+    conn: &Connection,
+    scope: Scope,
+    collection_id: &str,
+) -> rusqlite::Result<Vec<Thread>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {THREAD_COLUMNS} FROM threads t JOIN anchors a ON a.id = t.anchor_id
-         WHERE t.collection_id = ?1 ORDER BY t.created_at, t.id"
+         WHERE t.collection_id = ?1 AND {} ORDER BY t.created_at, t.id",
+        scope.threads()
     ))?;
     let mut threads = stmt
         .query_map([collection_id], thread_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    fill_comments(conn, &mut threads)?;
+    fill_comments(conn, scope, &mut threads)?;
     Ok(threads)
 }
 
@@ -248,7 +371,8 @@ pub fn marks(threads: &[&Thread]) -> Vec<Mark> {
     marks
 }
 
-/// The marks of every thread on `version_id`, for the script to redraw after a write.
+/// The marks of every thread the reader can see on `version_id`, for the script to redraw after
+/// a write.
 pub fn version_marks(
     conn: &Connection,
     collection_id: &str,
@@ -256,7 +380,9 @@ pub fn version_marks(
 ) -> rusqlite::Result<Vec<Mark>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {THREAD_COLUMNS} FROM threads t JOIN anchors a ON a.id = t.anchor_id
-         WHERE t.collection_id = ?1 AND a.version_id = ?2 ORDER BY t.created_at, t.id"
+         WHERE t.collection_id = ?1 AND a.version_id = ?2 AND {}
+         ORDER BY t.created_at, t.id",
+        Scope::Reader.threads()
     ))?;
     let on = stmt
         .query_map(params![collection_id, version_id], thread_row)?
@@ -264,113 +390,257 @@ pub fn version_marks(
     Ok(marks(&on.iter().collect::<Vec<_>>()))
 }
 
-/// Add a comment to a thread of this collection; `None` when there is no such thread.
-pub fn add_comment(
+/// The marks the reader sees on each version of each document of the collection.
+pub fn collection_marks(
     conn: &Connection,
+    collection_id: &str,
+) -> rusqlite::Result<Vec<(i64, Vec<Mark>)>> {
+    let mut stmt = conn.prepare(
+        "SELECT v.id FROM versions v JOIN documents d ON d.id = v.document_id
+         WHERE d.collection_id = ?1 ORDER BY d.position, v.number",
+    )?;
+    let versions = stmt
+        .query_map([collection_id], |r| r.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    versions
+        .into_iter()
+        .map(|v| Ok((v, version_marks(conn, collection_id, v)?)))
+        .collect()
+}
+
+/// Add a comment to a thread of this collection; `None` when `author` can see no such thread.
+#[allow(clippy::too_many_arguments)]
+pub fn add_comment(
+    conn: &mut Connection,
     collection_id: &str,
     thread_id: &str,
     comment_id: &str,
     author: &str,
+    visibility: Visibility,
     body: &str,
     now: i64,
 ) -> rusqlite::Result<Option<Thread>> {
-    if get(conn, collection_id, thread_id)?.is_none() {
+    let scope = Scope::of(author);
+    if get(conn, scope, collection_id, thread_id)?.is_none() {
         return Ok(None);
     }
-    conn.execute(
-        "INSERT INTO comments (id, thread_id, author, body, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
-        params![comment_id, thread_id, author, body, now],
+    let tx = conn.transaction()?;
+    tx.execute(
+        "INSERT INTO comments (id, thread_id, author, body, visibility, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+        params![comment_id, thread_id, author, body, visibility.as_str(), now],
     )?;
-    get(conn, collection_id, thread_id)
+    changes::record(
+        &tx,
+        &Logged {
+            collection_id,
+            kind: Kind::CommentCreated,
+            thread_id: Some(thread_id),
+            comment_id: Some(comment_id),
+            comment: Some((author, visibility.as_str())),
+            at: now,
+        },
+    )?;
+    tx.commit()?;
+    get(conn, scope, collection_id, thread_id)
 }
 
 pub enum Change<T> {
     NotFound,
-    /// The comment exists and is not the reader's.
+    /// The comment exists and is not the caller's.
     NotYours,
     Done(T),
 }
 
-/// (thread id, author) of a comment of this collection.
+struct Owned {
+    collection_id: String,
+    thread_id: String,
+    author: String,
+    visibility: Visibility,
+}
+
+/// The comment, within `collection_id` when one is given.
 fn owner(
     conn: &Connection,
-    collection_id: &str,
+    collection_id: Option<&str>,
     comment_id: &str,
-) -> rusqlite::Result<Option<(String, String)>> {
+) -> rusqlite::Result<Option<Owned>> {
     conn.query_row(
-        "SELECT c.thread_id, c.author FROM comments c JOIN threads t ON t.id = c.thread_id
-         WHERE c.id = ?1 AND t.collection_id = ?2",
+        "SELECT t.collection_id, c.thread_id, c.author, c.visibility
+         FROM comments c JOIN threads t ON t.id = c.thread_id
+         WHERE c.id = ?1 AND (?2 IS NULL OR t.collection_id = ?2)",
         params![comment_id, collection_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| {
+            Ok(Owned {
+                collection_id: r.get(0)?,
+                thread_id: r.get(1)?,
+                author: r.get(2)?,
+                visibility: Visibility::parse(&r.get::<_, String>(3)?)?,
+            })
+        },
     )
     .optional()
 }
 
-pub fn edit_comment(
+/// The comment as `who` may touch it: absent to the reader when held, refused unless `who`
+/// wrote it.
+fn own(
     conn: &Connection,
-    collection_id: &str,
+    collection_id: Option<&str>,
+    who: &str,
+    comment_id: &str,
+) -> rusqlite::Result<Change<Owned>> {
+    let Some(o) = owner(conn, collection_id, comment_id)? else {
+        return Ok(Change::NotFound);
+    };
+    if who == READER && o.visibility == Visibility::Held {
+        return Ok(Change::NotFound);
+    }
+    if o.author != who {
+        return Ok(Change::NotYours);
+    }
+    Ok(Change::Done(o))
+}
+
+pub fn edit_comment(
+    conn: &mut Connection,
+    collection_id: Option<&str>,
+    who: &str,
     comment_id: &str,
     body: &str,
     now: i64,
 ) -> rusqlite::Result<Change<Thread>> {
-    let Some((thread_id, author)) = owner(conn, collection_id, comment_id)? else {
-        return Ok(Change::NotFound);
+    let o = match own(conn, collection_id, who, comment_id)? {
+        Change::Done(o) => o,
+        Change::NotFound => return Ok(Change::NotFound),
+        Change::NotYours => return Ok(Change::NotYours),
     };
-    if author != READER {
-        return Ok(Change::NotYours);
-    }
-    conn.execute(
+    let tx = conn.transaction()?;
+    tx.execute(
         "UPDATE comments SET body = ?2, updated_at = ?3 WHERE id = ?1",
         params![comment_id, body, now],
     )?;
+    changes::record(
+        &tx,
+        &Logged {
+            collection_id: &o.collection_id,
+            kind: Kind::CommentUpdated,
+            thread_id: Some(&o.thread_id),
+            comment_id: Some(comment_id),
+            comment: Some((&o.author, o.visibility.as_str())),
+            at: now,
+        },
+    )?;
+    tx.commit()?;
     Ok(Change::Done(
-        get(conn, collection_id, &thread_id)?.expect("the comment's thread exists"),
+        get(conn, Scope::of(who), &o.collection_id, &o.thread_id)?
+            .expect("the comment's thread exists"),
     ))
 }
 
 pub enum Deleted {
-    /// Comments remain: the thread as it is now.
+    /// Comments `who` can see remain: the thread as it is now.
     Left(Thread),
-    /// The thread had no other comment and went with its anchor: the version's marks now.
+    /// No such comment remains: the reader's marks on the version now.
     Gone(Vec<Mark>),
 }
 
-/// Delete the reader's comment. A thread left with no comments goes with its anchor.
+/// Delete `who`'s own comment. A thread left with no comments goes with its anchor.
 pub fn delete_comment(
     conn: &mut Connection,
-    collection_id: &str,
+    collection_id: Option<&str>,
+    who: &str,
     comment_id: &str,
+    now: i64,
 ) -> rusqlite::Result<Change<Deleted>> {
-    let Some((thread_id, author)) = owner(conn, collection_id, comment_id)? else {
-        return Ok(Change::NotFound);
+    let o = match own(conn, collection_id, who, comment_id)? {
+        Change::Done(o) => o,
+        Change::NotFound => return Ok(Change::NotFound),
+        Change::NotYours => return Ok(Change::NotYours),
     };
-    if author != READER {
-        return Ok(Change::NotYours);
-    }
     let tx = conn.transaction()?;
     tx.execute("DELETE FROM comments WHERE id = ?1", [comment_id])?;
+    changes::record(
+        &tx,
+        &Logged {
+            collection_id: &o.collection_id,
+            kind: Kind::CommentDeleted,
+            thread_id: Some(&o.thread_id),
+            comment_id: Some(comment_id),
+            comment: Some((&o.author, o.visibility.as_str())),
+            at: now,
+        },
+    )?;
     let left: i64 = tx.query_row(
         "SELECT COUNT(*) FROM comments WHERE thread_id = ?1",
-        [&thread_id],
+        [&o.thread_id],
         |r| r.get(0),
     )?;
-    if left > 0 {
-        let thread = get(&tx, collection_id, &thread_id)?.expect("the thread still has comments");
-        tx.commit()?;
-        return Ok(Change::Done(Deleted::Left(thread)));
-    }
     let (anchor_id, version_id): (i64, i64) = tx.query_row(
         "SELECT t.anchor_id, a.version_id FROM threads t JOIN anchors a ON a.id = t.anchor_id
          WHERE t.id = ?1",
-        [&thread_id],
+        [&o.thread_id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    tx.execute("DELETE FROM threads WHERE id = ?1", [&thread_id])?;
-    tx.execute("DELETE FROM anchors WHERE id = ?1", [anchor_id])?;
-    let marks = version_marks(&tx, collection_id, version_id)?;
+    if left == 0 {
+        tx.execute("DELETE FROM threads WHERE id = ?1", [&o.thread_id])?;
+        tx.execute("DELETE FROM anchors WHERE id = ?1", [anchor_id])?;
+    }
+    let thread = get(&tx, Scope::of(who), &o.collection_id, &o.thread_id)?;
+    let done = match thread {
+        Some(t) => Deleted::Left(t),
+        None => Deleted::Gone(version_marks(&tx, &o.collection_id, version_id)?),
+    };
     tx.commit()?;
-    Ok(Change::Done(Deleted::Gone(marks)))
+    Ok(Change::Done(done))
+}
+
+pub enum Published {
+    NotFound,
+    /// A closed collection takes no more.
+    Closed,
+    /// How many held comments became visible.
+    Done(usize),
+}
+
+/// Release every held comment of the collection, move `open` to `published`, and log it once.
+pub fn publish(conn: &mut Connection, collection_id: &str, now: i64) -> rusqlite::Result<Published> {
+    let tx = conn.transaction()?;
+    let state: Option<String> = tx
+        .query_row(
+            "SELECT state FROM collections WHERE id = ?1",
+            [collection_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match state.as_deref() {
+        None => return Ok(Published::NotFound),
+        Some("closed") => return Ok(Published::Closed),
+        Some(_) => {}
+    }
+    let released = tx.execute(
+        "UPDATE comments SET visibility = 'now'
+         WHERE visibility = 'held'
+           AND thread_id IN (SELECT id FROM threads WHERE collection_id = ?1)",
+        [collection_id],
+    )?;
+    tx.execute(
+        "UPDATE collections SET state = 'published', updated_at = ?2 WHERE id = ?1",
+        params![collection_id, now],
+    )?;
+    changes::record(
+        &tx,
+        &Logged {
+            collection_id,
+            kind: Kind::Published,
+            thread_id: None,
+            comment_id: None,
+            comment: None,
+            at: now,
+        },
+    )?;
+    tx.commit()?;
+    Ok(Published::Done(released))
 }
 
 #[cfg(test)]

@@ -205,8 +205,9 @@ pub fn list(
     .collect()
 }
 
-pub fn patch(conn: &Connection, id: &str, p: &Patch, now: i64) -> rusqlite::Result<bool> {
-    let n = conn.execute(
+pub fn patch(conn: &mut Connection, id: &str, p: &Patch, now: i64) -> rusqlite::Result<bool> {
+    let tx = conn.transaction()?;
+    let n = tx.execute(
         "UPDATE collections SET
             title = COALESCE(?2, title),
             cover_note = COALESCE(?3, cover_note),
@@ -215,6 +216,20 @@ pub fn patch(conn: &Connection, id: &str, p: &Patch, now: i64) -> rusqlite::Resu
          WHERE id = ?1",
         params![id, p.title, p.cover_note, p.state.map(State::as_str), now],
     )?;
+    if n > 0 {
+        crate::changes::record(
+            &tx,
+            &crate::changes::Logged {
+                collection_id: id,
+                kind: crate::changes::Kind::CollectionUpdated,
+                thread_id: None,
+                comment_id: None,
+                comment: None,
+                at: now,
+            },
+        )?;
+    }
+    tx.commit()?;
     Ok(n > 0)
 }
 
