@@ -141,14 +141,29 @@
         x: e.clientX,
         y: e.clientY,
         ranging: false,
+        t0: e.timeStamp,
         timer: setTimeout(beginRange, HOLD_MS),
       };
     });
+
+    // Judged by event time, not by when the page got to the event: a move stamped before the hold
+    // and past the slop is a swipe even if the hold timer has fired since.
+    function movedEarly(e) {
+      return (
+        g.ranging &&
+        e.timeStamp - g.t0 < HOLD_MS &&
+        (Math.abs(e.clientX - g.x0) > SLOP || Math.abs(e.clientY - g.y0) > SLOP)
+      );
+    }
 
     document.addEventListener('pointermove', function (e) {
       if (!g || e.pointerId !== g.id) return;
       g.x = e.clientX;
       g.y = e.clientY;
+      if (movedEarly(e)) {
+        stopGesture(); // the hold timer fired before this move was handled, but the move came first
+        return;
+      }
       if (g.ranging) {
         setCur(lineAt(g.lines, g.x, g.y));
       } else if (Math.abs(g.x - g.x0) > SLOP || Math.abs(g.y - g.y0) > SLOP) {
@@ -169,6 +184,10 @@
     document.addEventListener('pointerup', function (e) {
       if (!g || e.pointerId !== g.id) return;
       var lines = g.lines;
+      if (movedEarly(e)) {
+        stopGesture();
+        return;
+      }
       var first = Math.min(g.start, g.cur);
       var last = Math.max(g.start, g.cur);
       if (g.ranging) {
