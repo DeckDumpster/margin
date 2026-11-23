@@ -14,7 +14,8 @@ cargo test -p margin --features integration --test http
 # The browser is the official Chrome for Testing build fetched by version and checked against a
 # pinned sha256, so the suite runs the same browser on any distribution. Only its shared
 # libraries and unzip come from the distribution's apt, unpinned.
-apt-get update -o Acquire::Retries=3 >/dev/null
+# A fresh VM runs unattended-upgrades; wait for its dpkg lock rather than fail.
+apt-get update -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 >/dev/null
 # Library names differ across releases (the t64 rename); take whichever one this archive has.
 for lib in libasound2 libatk-bridge2.0-0 libatk1.0-0 libcups2 libdbus-1-3 libdrm2 libgbm1 \
   libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 libcairo2 libx11-6 libxcb1 libxcomposite1 \
@@ -28,9 +29,9 @@ for lib in libasound2 libatk-bridge2.0-0 libatk1.0-0 libcups2 libdbus-1-3 libdrm
     echo "gate.sh: this archive has neither ${lib} nor ${lib}t64" >&2
     exit 1
   fi
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "$found" >/dev/null
+  DEBIAN_FRONTEND=noninteractive apt-get install -o DPkg::Lock::Timeout=600 -y -qq --no-install-recommends "$found" >/dev/null
 done
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends unzip curl ca-certificates >/dev/null
+DEBIAN_FRONTEND=noninteractive apt-get install -o DPkg::Lock::Timeout=600 -y -qq --no-install-recommends unzip curl ca-certificates >/dev/null
 
 browser_dir="$(mktemp -d)"
 trap 'rm -rf "$browser_dir"' EXIT
