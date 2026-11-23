@@ -50,7 +50,7 @@ fn harness() -> Harness {
     let agents = dir.path().join("agents.toml");
     std::fs::write(&agents, format!("tester = \"{}\"\n", hash_token(TOKEN))).unwrap();
     let config = Config::parse(&format!(
-        "listen = \"127.0.0.1:0\"\nbase_url = \"http://margin.test:7340/\"\ndatabase = \"{}\"\nagents_file = \"{}\"\notlp_endpoint = \"http://127.0.0.1:1/v1/metrics\"\n",
+        "listen = \"127.0.0.1:0\"\nbase_url = \"http://margin.test:7340/\"\ndatabase = \"{}\"\nagents_file = \"{}\"\notlp_endpoint = \"http://127.0.0.1:1/v1/metrics\"\ninstance = \"test\"\n",
         dir.path().join("m.db").display(),
         agents.display()
     ))
@@ -449,6 +449,7 @@ fn a_config_missing_a_key_is_refused_by_that_key() {
         ("database", "/var/m.db"),
         ("agents_file", "/etc/agents.toml"),
         ("otlp_endpoint", "http://127.0.0.1:4318"),
+        ("instance", "production"),
     ];
     for skip in 0..full.len() {
         let text: String = full
@@ -475,7 +476,7 @@ fn a_config_missing_a_key_is_refused_by_that_key() {
 fn an_unspecified_listen_address_is_refused() {
     for listen in ["0.0.0.0:7340", "[::]:7340"] {
         let text = format!(
-            "listen = \"{listen}\"\nbase_url = \"http://x\"\ndatabase = \"d\"\nagents_file = \"a\"\notlp_endpoint = \"o\"\n"
+            "listen = \"{listen}\"\nbase_url = \"http://x\"\ndatabase = \"d\"\nagents_file = \"a\"\notlp_endpoint = \"o\"\ninstance = \"test\"\n"
         );
         assert!(
             matches!(Config::parse(&text), Err(ConfigError::UnspecifiedListen(_))),
@@ -495,7 +496,7 @@ fn tiny_queue_harness() -> (
     let agents = dir.path().join("agents.toml");
     std::fs::write(&agents, "").unwrap();
     let config = Config::parse(&format!(
-        "listen = \"127.0.0.1:0\"\nbase_url = \"http://margin.test\"\ndatabase = \"{}\"\nagents_file = \"{}\"\notlp_endpoint = \"http://127.0.0.1:1\"\n",
+        "listen = \"127.0.0.1:0\"\nbase_url = \"http://margin.test\"\ndatabase = \"{}\"\nagents_file = \"{}\"\notlp_endpoint = \"http://127.0.0.1:1\"\ninstance = \"test\"\n",
         dir.path().join("m.db").display(),
         agents.display()
     ))

@@ -1,6 +1,7 @@
-# Rendered by deploy.sh into ~/.config/margin/margin.toml; every @NAME@ is filled at deploy time.
+# Rendered by deploy.sh into ~/.config/margin/margin.toml (and scratch/margin.toml); every @NAME@ is filled at deploy time.
 listen = "@LISTEN@"
 base_url = "@BASE_URL@"
 database = "@DATABASE@"
 agents_file = "@AGENTS_FILE@"
 otlp_endpoint = "@OTLP_ENDPOINT@"
+instance = "@INSTANCE@"
