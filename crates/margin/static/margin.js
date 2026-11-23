@@ -33,7 +33,6 @@
     var collection = document.body.getAttribute('data-collection');
     var body = document.body;
     var g = null; // the gesture in flight
-    var box = null; // the open new-comment form
 
     function rowsOf(lines) {
       if (!lines._rows) lines._rows = Array.prototype.slice.call(lines.querySelectorAll('[data-line]'));
@@ -51,13 +50,23 @@
       for (var n = Math.min(a, b); n <= Math.max(a, b); n++) rows[n - 1].classList.toggle('sel', on);
     }
 
-    function closeBox() {
-      if (box) box.remove();
-      box = null;
-    }
-
     function openBox(lines, first, last, cols) {
-      closeBox();
+      var open = Array.prototype.slice.call(document.querySelectorAll('form.newbox'));
+      var same = null;
+      open.forEach(function (f) {
+        if (!f.elements.body.value.trim()) f.remove();
+        else if (
+          lines.contains(f) &&
+          f.getAttribute('data-first') === String(first) &&
+          f.getAttribute('data-last') === String(last) &&
+          f.getAttribute('data-start-col') === (cols ? String(cols[0]) : null) &&
+          f.getAttribute('data-end-col') === (cols ? String(cols[1]) : null)
+        ) same = f;
+      });
+      if (same) {
+        same.elements.body.focus({ preventScroll: true });
+        return;
+      }
       var form = document.createElement('form');
       form.className = 'newbox';
       form.setAttribute('data-first', first);
@@ -85,7 +94,6 @@
       cancel.textContent = 'Cancel';
       form.append(who, area, post, cancel);
       rowsOf(lines)[last - 1].after(form);
-      box = form;
       area.focus({ preventScroll: true });
     }
 
@@ -204,6 +212,11 @@
 
     document.addEventListener('pointercancel', function (e) {
       if (g && e.pointerId === g.id) stopGesture();
+    });
+
+    // A tap on a number must not pull focus off the box the tap just focused.
+    document.addEventListener('mousedown', function (e) {
+      if (e.target.closest && e.target.closest('.no')) e.preventDefault();
     });
 
     document.addEventListener('contextmenu', function (e) {
@@ -500,7 +513,6 @@
         if (!res.ok) return fail(form, res);
         res.text().then(function (html) {
           if (form.classList.contains('newbox')) {
-            box = null;
             drawMarks(lines, res);
             swap(form, html);
           } else {
@@ -539,7 +551,10 @@
       if (act === 'cancel') {
         var edit = btn.closest('form.edit');
         if (edit) edit.replaceWith(edit._body);
-        else closeBox();
+        else {
+          var nb = btn.closest('form.newbox');
+          if (nb) nb.remove();
+        }
       } else if (act === 'edit') {
         var cm = btn.closest('.cm');
         var bodyEl = cm.querySelector('.body');

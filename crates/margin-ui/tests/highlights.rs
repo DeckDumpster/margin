@@ -405,3 +405,88 @@ async fn a_second_overlapping_highlight_leaves_the_shared_words_with_both_lanes(
     screenshot(page, "highlights-1280.png").await;
     rig.close().await;
 }
+
+#[test_id(t355qrw)]
+#[tokio::test]
+#[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
+async fn commenting_on_words_keeps_the_text_of_other_open_boxes() {
+    let rig = rig().await;
+    let page = &rig.page;
+    // Open a line-10 box by the same path a tap takes: the number's pointer events.
+    eval::<bool>(
+        page,
+        "(() => { const n = document.querySelector('[data-line=\"10\"] .no');
+          const r = n.getBoundingClientRect();
+          const o = { bubbles: true, pointerType: 'touch', isPrimary: true, clientX: r.left + 2, clientY: r.top + 2 };
+          n.dispatchEvent(new PointerEvent('pointerdown', o));
+          n.dispatchEvent(new PointerEvent('pointerup', o)); return true; })()",
+    )
+    .await;
+    wait_for(
+        page,
+        "line 10 box",
+        "document.querySelector('.newbox[data-first=\"10\"]')",
+    )
+    .await;
+    eval::<bool>(
+        page,
+        "(() => { document.querySelector('.newbox[data-first=\"10\"] textarea').value = 'ten'; return true; })()",
+    )
+    .await;
+
+    select(page, 12, 3, 12, 10).await;
+    wait_for(
+        page,
+        "the Comment button showed",
+        "(() => { const b = document.getElementById('hl-comment'); return b && !b.hidden; })()",
+    )
+    .await;
+    eval::<bool>(
+        page,
+        "(() => { document.getElementById('hl-comment').click(); return true; })()",
+    )
+    .await;
+    wait_for(
+        page,
+        "words box",
+        "document.querySelector('.newbox[data-start-col]')",
+    )
+    .await;
+    let ten: String = eval(
+        page,
+        "document.querySelector('.newbox[data-first=\"10\"] textarea').value",
+    )
+    .await;
+    assert_eq!(ten, "ten");
+
+    eval::<bool>(
+        page,
+        "(() => { document.querySelector('.newbox[data-start-col] textarea').value = 'words'; return true; })()",
+    )
+    .await;
+    select(page, 14, 3, 14, 10).await;
+    wait_for(
+        page,
+        "the Comment button showed",
+        "(() => { const b = document.getElementById('hl-comment'); return b && !b.hidden; })()",
+    )
+    .await;
+    eval::<bool>(
+        page,
+        "(() => { document.getElementById('hl-comment').click(); return true; })()",
+    )
+    .await;
+    wait_for(
+        page,
+        "second words box",
+        "document.querySelector('.newbox[data-first=\"14\"][data-start-col]')",
+    )
+    .await;
+    let texts: Vec<String> = eval(
+        page,
+        "[...document.querySelectorAll('.newbox')].map((f) => f.querySelector('textarea').value)",
+    )
+    .await;
+    assert_eq!(texts, ["ten", "words", ""]);
+    rig.close().await;
+}

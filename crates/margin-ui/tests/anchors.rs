@@ -534,3 +534,205 @@ async fn three_overlapping_threads_open_keep_the_phone_page_inside_390px() {
     screenshot(page, "anchors-1280.png").await;
     rig.close().await;
 }
+
+async fn tap_number(page: &Page, n: u32) {
+    let (x, y) = number_of(page, n).await;
+    touch(page, DispatchTouchEventType::TouchStart, Some((x, y)), None).await;
+    touch(page, DispatchTouchEventType::TouchEnd, None, None).await;
+}
+
+async fn set_box_text(page: &Page, first: u32, text: &str) {
+    eval::<bool>(
+        page,
+        &format!(
+            "(() => {{ document.querySelector('.newbox[data-first=\"{first}\"] textarea').value = {text:?}; return true; }})()"
+        ),
+    )
+    .await;
+}
+
+async fn box_text(page: &Page, first: u32) -> String {
+    eval(
+        page,
+        &format!("document.querySelector('.newbox[data-first=\"{first}\"] textarea').value"),
+    )
+    .await
+}
+
+#[test_id(t0dlf8g)]
+#[tokio::test]
+#[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
+async fn a_box_holding_text_stays_when_another_line_is_tapped() {
+    let rig = rig().await;
+    let page = &rig.page;
+    tap_number(page, 10).await;
+    wait_for(
+        page,
+        "line 10 box",
+        "document.querySelector('.newbox[data-first=\"10\"]')",
+    )
+    .await;
+    set_box_text(page, 10, "off").await;
+    tap_number(page, 12).await;
+    wait_for(
+        page,
+        "line 12 box",
+        "document.querySelector('.newbox[data-first=\"12\"]')",
+    )
+    .await;
+    let under: String = eval(
+        page,
+        "document.querySelector('.newbox[data-first=\"10\"]').previousElementSibling.getAttribute('data-line')",
+    )
+    .await;
+    assert_eq!(under, "10");
+    assert_eq!(box_text(page, 10).await, "off");
+    assert_eq!(box_text(page, 12).await, "");
+
+    // Tapping line 10 again focuses the same box rather than opening a second.
+    tap_number(page, 10).await;
+    wait_for(
+        page,
+        "the line-10 box focused",
+        "document.activeElement === document.querySelector('.newbox[data-first=\"10\"] textarea')",
+    )
+    .await;
+    let n: u32 = eval(
+        page,
+        "document.querySelectorAll('.newbox[data-first=\"10\"]').length",
+    )
+    .await;
+    assert_eq!(n, 1);
+    assert_eq!(box_text(page, 10).await, "off");
+
+    // Cancel removes only its own box. The empty line-12 box closed above; open it again.
+    tap_number(page, 12).await;
+    wait_for(
+        page,
+        "line 12 box",
+        "document.querySelector('.newbox[data-first=\"12\"]')",
+    )
+    .await;
+    set_box_text(page, 12, "twelve").await;
+    tap_number(page, 14).await;
+    wait_for(
+        page,
+        "line 14 box",
+        "document.querySelector('.newbox[data-first=\"14\"]')",
+    )
+    .await;
+    set_box_text(page, 14, "fourteen").await;
+    eval::<bool>(
+        page,
+        "(() => { document.querySelector('.newbox[data-first=\"14\"] button[data-act=cancel]').click(); return true; })()",
+    )
+    .await;
+    let left: Vec<String> = eval(
+        page,
+        "[...document.querySelectorAll('.newbox')].map((f) => f.dataset.first)",
+    )
+    .await;
+    assert_eq!(left, ["10", "12"]);
+
+    // Posting the line-10 box leaves the line-12 text alone.
+    eval::<bool>(
+        page,
+        "(() => { document.querySelector('.newbox[data-first=\"10\"] button[type=submit]').click(); return true; })()",
+    )
+    .await;
+    wait_for(
+        page,
+        "the thread on line 10",
+        "document.querySelector('.thread[data-first=\"10\"]')",
+    )
+    .await;
+    assert_eq!(box_text(page, 12).await, "twelve");
+    rig.close().await;
+}
+
+#[test_id(tvfgojj)]
+#[tokio::test]
+#[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
+async fn a_held_range_keeps_the_text_of_an_open_box_and_empty_boxes_close() {
+    let rig = rig().await;
+    let page = &rig.page;
+    tap_number(page, 10).await;
+    wait_for(
+        page,
+        "line 10 box",
+        "document.querySelector('.newbox[data-first=\"10\"]')",
+    )
+    .await;
+    set_box_text(page, 10, "keep me").await;
+
+    let (x, y) = number_of(page, 20).await;
+    touch(page, DispatchTouchEventType::TouchStart, Some((x, y)), None).await;
+    wait_for(
+        page,
+        "ranging",
+        "document.body.dataset.gesture === 'ranging'",
+    )
+    .await;
+    let (_, y22) = number_of_without_scroll(page, 22).await;
+    touch(
+        page,
+        DispatchTouchEventType::TouchMove,
+        Some((x, y22)),
+        None,
+    )
+    .await;
+    wait_for(
+        page,
+        "line 22 selected",
+        "document.querySelector('[data-line=\"22\"].sel')",
+    )
+    .await;
+    touch(page, DispatchTouchEventType::TouchEnd, None, None).await;
+    wait_for(
+        page,
+        "range box",
+        "document.querySelector('.newbox[data-first=\"20\"][data-last=\"22\"]')",
+    )
+    .await;
+    assert_eq!(box_text(page, 10).await, "keep me");
+
+    // Empty boxes close when another opens.
+    eval::<bool>(
+        page,
+        "(() => { document.querySelectorAll('.newbox').forEach((f) => f.remove()); return true; })()",
+    )
+    .await;
+    tap_number(page, 10).await;
+    wait_for(
+        page,
+        "line 10 box",
+        "document.querySelector('.newbox[data-first=\"10\"]')",
+    )
+    .await;
+    tap_number(page, 12).await;
+    wait_for(
+        page,
+        "line 12 box",
+        "document.querySelector('.newbox[data-first=\"12\"]')",
+    )
+    .await;
+    let left: Vec<String> = eval(
+        page,
+        "[...document.querySelectorAll('.newbox')].map((f) => f.dataset.first)",
+    )
+    .await;
+    assert_eq!(left, ["12"]);
+    rig.close().await;
+}
+
+/// The centre of line `n`'s number where it is now, without scrolling.
+async fn number_of_without_scroll(page: &Page, n: u32) -> (f64, f64) {
+    eval(
+        page,
+        &format!(
+            "(() => {{ const r = document.querySelector('[data-line=\"{n}\"] .no').getBoundingClientRect();
+              return [r.left + r.width / 2, r.top + r.height / 2]; }})()"
+        ),
+    )
+    .await
+}
