@@ -302,6 +302,45 @@ async fn a_tap_on_line_10_opens_the_box_under_line_10() {
     rig.close().await;
 }
 
+#[test_id(tqx5zel)]
+#[tokio::test]
+#[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
+async fn the_three_comment_fields_are_16px_so_iphone_safari_does_not_zoom() {
+    let rig = rig().await;
+    let page = &rig.page;
+    let size = "parseFloat(getComputedStyle(document.querySelector('SEL')).fontSize)";
+    let (x, y) = number_of(page, 10).await;
+    touch(page, DispatchTouchEventType::TouchStart, Some((x, y)), None).await;
+    touch(page, DispatchTouchEventType::TouchEnd, None, None).await;
+    wait_for(page, "the box opened", "document.querySelector('.newbox')").await;
+    let new_box: f64 = eval(page, &size.replace("SEL", ".newbox textarea")).await;
+    post_from_box(page, "a comment to reply to and edit").await;
+    wait_for(
+        page,
+        "the thread is visible",
+        "document.querySelector('.thread:not([hidden]) form.reply textarea')",
+    )
+    .await;
+    let reply: f64 = eval(page, &size.replace("SEL", "form.reply textarea")).await;
+    eval::<bool>(
+        page,
+        "(() => { document.querySelector('button[data-act=\"edit\"]').click(); return true; })()",
+    )
+    .await;
+    wait_for(
+        page,
+        "the edit box opened",
+        "document.querySelector('form.edit textarea')",
+    )
+    .await;
+    let edit: f64 = eval(page, &size.replace("SEL", "form.edit textarea")).await;
+    assert!(
+        new_box >= 16.0 && reply >= 16.0 && edit >= 16.0,
+        "iOS zooms a focused field under 16px; font sizes: new-comment {new_box}px, reply {reply}px, edit {edit}px"
+    );
+    rig.close().await;
+}
+
 #[test_id(tdgv5ru)]
 #[tokio::test]
 #[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
