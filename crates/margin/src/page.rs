@@ -3,7 +3,7 @@
 use askama::Template;
 
 use crate::highlight::Highlighter;
-use crate::store::Collection;
+use crate::store::{Collection, Document};
 use crate::threads::{self, READER};
 use margin_core::anchor::Anchor;
 use margin_core::highlight;
@@ -26,6 +26,8 @@ pub struct ThreadView {
     pub first: u32,
     pub last: u32,
     pub open: bool,
+    /// Why the thread is not where it was written, when it is not.
+    pub label: Option<&'static str>,
     pub comments: Vec<CommentView>,
 }
 
@@ -36,6 +38,11 @@ impl ThreadView {
             first: t.first_line,
             last: t.last_line,
             open,
+            label: match t.carry_state {
+                threads::CarryState::Placed => None,
+                threads::CarryState::Removed => Some("on a line since removed"),
+                threads::CarryState::TextChanged => Some("text since changed"),
+            },
             comments: t
                 .comments
                 .iter()
@@ -59,6 +66,8 @@ pub struct ThreadFragment {
 
 pub struct LineView {
     pub n: usize,
+    /// Inserted or edited in this version.
+    pub changed: bool,
     pub html: String,
     /// One per thread covering this line, in that thread's lane.
     pub marks: Vec<MarkView>,
@@ -68,6 +77,7 @@ pub struct LineView {
 
 pub struct DocView {
     pub path: String,
+    pub version: i64,
     pub version_id: i64,
     pub digits: usize,
     pub lines: Vec<LineView>,
@@ -110,6 +120,21 @@ fn tinted(html: &str, marks: &[threads::Mark], n: u32, len: u32) -> String {
 pub const CSS: &str = include_str!("../static/margin.css");
 pub const JS: &str = include_str!("../static/margin.js");
 
+/// The lines of the document's latest version that its previous one did not have.
+fn changed_in_latest(d: &Document) -> std::collections::HashSet<u32> {
+    let Some(previous) = &d.previous_text else {
+        return Default::default();
+    };
+    let (old, new) = (
+        margin_core::lines::split(previous),
+        margin_core::lines::split(&d.text),
+    );
+    let map = margin_core::carry::line_map(&old, &new);
+    margin_core::carry::changed_lines(&map, new.len())
+        .into_iter()
+        .collect()
+}
+
 /// CPU-bound (highlighting a few thousand lines); callers run it off the event loop.
 pub fn render(
     c: &Collection,
@@ -130,6 +155,7 @@ pub fn render(
                 .iter()
                 .map(|l| l.chars().count() as u32)
                 .collect();
+            let changed = changed_in_latest(d);
             let lines: Vec<LineView> = highlighter
                 .lines_cached(&d.id, d.version, &d.path, d.kind, &d.text)
                 .iter()
@@ -138,6 +164,7 @@ pub fn render(
                     let n = (i + 1) as u32;
                     LineView {
                         n: i + 1,
+                        changed: changed.contains(&n),
                         html: tinted(html, &marks, n, lens[i]),
                         marks: marks
                             .iter()
@@ -157,6 +184,7 @@ pub fn render(
                 .collect();
             DocView {
                 path: d.path.clone(),
+                version: d.version,
                 version_id: d.version_id,
                 digits: lines.len().max(1).to_string().len(),
                 lines,

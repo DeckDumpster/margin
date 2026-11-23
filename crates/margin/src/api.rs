@@ -24,6 +24,7 @@ use crate::store::{self, NewCollection, NewDocument, Patch};
 use crate::threads::{
     self, Change, CreateError, Deleted, Mark, NewThread, Published, Scope, Thread, Visibility,
 };
+use crate::versions;
 use askama::Template;
 use margin_core::anchor::Anchor;
 
@@ -55,6 +56,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/collections/{id}/threads",
             get(agent_list_threads).post(agent_create_thread),
+        )
+        .route(
+            "/api/documents/{doc_id}/versions",
+            get(list_versions).post(create_version),
+        )
+        .route(
+            "/api/documents/{doc_id}/versions/{n}",
+            get(read_version).delete(delete_version),
         )
         .route("/api/threads/{tid}", get(agent_thread))
         .route("/api/threads/{tid}/comments", post(agent_reply))
@@ -924,6 +933,8 @@ struct VersionMarks {
 #[derive(Serialize)]
 struct PageFeed {
     last_seq: i64,
+    /// A version arrived: the page shows the newest, so it reloads.
+    reload: bool,
     state: String,
     /// Threads to put on the page, each replacing the one it has there or going in after its
     /// last line.
@@ -939,6 +950,7 @@ struct PageLook {
     last_seq: i64,
     state: String,
     changed: bool,
+    reload: bool,
     threads: Vec<Thread>,
     gone: Vec<String>,
     marks: Vec<(i64, Vec<Mark>)>,
@@ -961,6 +973,7 @@ fn look(
         last_seq: batch.last_seq,
         state,
         changed: !batch.rows.is_empty(),
+        reload: batch.rows.iter().any(|r| r.kind == "version_created"),
         threads: Vec::new(),
         gone: Vec::new(),
         marks: Vec::new(),
@@ -1035,6 +1048,7 @@ async fn page_changes(
         .collect::<Result<Vec<_>, ApiError>>()?;
     Ok(Json(PageFeed {
         last_seq: found.last_seq,
+        reload: found.reload,
         state: found.state,
         threads,
         gone: found.gone,
@@ -1044,4 +1058,93 @@ async fn page_changes(
             .map(|(version_id, marks)| VersionMarks { version_id, marks })
             .collect(),
     }))
+}
+
+#[derive(Deserialize)]
+struct VersionBody {
+    text: String,
+}
+
+#[derive(Serialize)]
+struct Listed {
+    items: Vec<versions::Version>,
+    next: Option<String>,
+}
+
+/// POST the next version of a document; its threads are carried onto it.
+async fn create_version(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(doc_id): Path<String>,
+    body: Result<Json<VersionBody>, axum::extract::rejection::JsonRejection>,
+) -> Result<(StatusCode, Json<versions::Version>), ApiError> {
+    s.agent(&headers).await?;
+    let b = json_body(body)?;
+    let now = s.clock.now_unix();
+    let added = s
+        .run(move |conn| versions::add(conn, &doc_id, &b.text, now))
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    Ok((StatusCode::CREATED, Json(added.version)))
+}
+
+async fn list_versions(
+    State(s): State<AppState>,
+    Path(doc_id): Path<String>,
+    Query(q): Query<ListQuery>,
+) -> Result<Json<Listed>, ApiError> {
+    let limit = q.limit.unwrap_or(DEFAULT_PAGE);
+    if limit == 0 || limit > MAX_PAGE {
+        return Err(ApiError::BadRequest(format!(
+            "limit must be 1..={MAX_PAGE}"
+        )));
+    }
+    let after = match q.after {
+        None => 0,
+        Some(a) => a
+            .parse::<i64>()
+            .map_err(|_| ApiError::BadRequest("after is a version number".into()))?,
+    };
+    let mut items = s
+        .run(move |conn| versions::list(conn, &doc_id, limit + 1, after))
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    let next = if items.len() > limit {
+        items.truncate(limit);
+        items.last().map(|v| v.number.to_string())
+    } else {
+        None
+    };
+    Ok(Json(Listed { items, next }))
+}
+
+async fn read_version(
+    State(s): State<AppState>,
+    Path((doc_id, n)): Path<(String, i64)>,
+) -> Result<Json<versions::Version>, ApiError> {
+    let found = s.run(move |conn| versions::get(conn, &doc_id, n)).await?;
+    found.map(Json).ok_or(ApiError::NotFound)
+}
+
+/// Only the latest version, and never version 1; its threads go back to their earlier anchors.
+async fn delete_version(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((doc_id, n)): Path<(String, i64)>,
+) -> Result<StatusCode, ApiError> {
+    s.agent(&headers).await?;
+    let now = s.clock.now_unix();
+    let (outcome, _) = s
+        .run(move |conn| versions::delete_latest(conn, &doc_id, n, now))
+        .await?;
+    match outcome {
+        versions::Deleted::Gone => Ok(StatusCode::NO_CONTENT),
+        versions::Deleted::NoSuchVersion => Err(ApiError::NotFound),
+        versions::Deleted::NotAllowed => Err(ApiError::Conflict(
+            "only the latest version can be deleted, and never version 1".into(),
+        )),
+        versions::Deleted::HasNewThreads => Err(ApiError::Conflict(
+            "a thread was started on this version; it has no earlier anchor to return to".into(),
+        )),
+    }
 }

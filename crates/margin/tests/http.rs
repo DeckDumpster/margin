@@ -1120,3 +1120,257 @@ async fn columns_after_a_tab_and_an_emoji_count_one_each() {
         .collect();
     assert_eq!(texts, ["\u{1F642}", "word"]);
 }
+
+
+fn numbered(lines: impl IntoIterator<Item = String>) -> String {
+    lines.into_iter().map(|l| format!("{l}\n")).collect()
+}
+
+async fn post_version(
+    h: &Harness,
+    doc_id: &str,
+    token: Option<&str>,
+    text: &str,
+) -> (StatusCode, Value) {
+    let (s, body) = send(
+        &h.app,
+        Method::POST,
+        &format!("/api/documents/{doc_id}/versions"),
+        token,
+        Some(json!({"text": text})),
+    )
+    .await;
+    (s, serde_json::from_str(&body).unwrap_or(Value::Null))
+}
+
+async fn reader_page(h: &Harness, id: &str) -> String {
+    send(&h.app, Method::GET, &format!("/c/{id}"), None, None)
+        .await
+        .1
+}
+
+async fn document_id(h: &Harness, id: &str) -> String {
+    let (_, body) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{id}"),
+        None,
+        None,
+    )
+    .await;
+    let got: Value = serde_json::from_str(&body).unwrap();
+    got["documents"][0]["id"].as_str().unwrap().to_string()
+}
+
+/// The html of line `n`'s row and whatever sits between it and the next line's row.
+fn row_and_threads(html: &str, n: usize) -> &str {
+    let at = html.find(&format!("data-line=\"{n}\"")).unwrap();
+    let start = html[..at].rfind("<div class=\"ln").unwrap();
+    let end = html[at..]
+        .find("<div class=\"ln")
+        .map_or(html.len(), |e| at + e);
+    &html[start..end]
+}
+
+#[test_id(tvj40oc)]
+#[tokio::test]
+async fn a_version_inserting_five_lines_above_a_thread_carries_it_down_with_no_label() {
+    let h = harness();
+    let (id, version) = small_collection(&h, 12).await;
+    let (s, _, _) = new_thread(&h, &id, version, 10, 10, "why this?").await;
+    assert_eq!(s, StatusCode::CREATED);
+    let doc_id = document_id(&h, &id).await;
+    let text = numbered(
+        (1..=5)
+            .map(|n| format!("new {n}"))
+            .chain((1..=12).map(|n| format!("line {n}"))),
+    );
+    let (s, v) = post_version(&h, &doc_id, Some(TOKEN), &text).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["number"], 2);
+    let html = reader_page(&h, &id).await;
+    assert!(html.contains("version 2"), "{html}");
+    let row = row_and_threads(&html, 15);
+    assert!(row.contains("why this?"), "{row}");
+    assert!(!row.contains("since"), "{row}");
+    for n in 1..=5 {
+        assert!(row_and_threads(&html, n).contains("ln changed"), "line {n}");
+    }
+    assert!(!row_and_threads(&html, 6).contains("changed"));
+}
+
+#[test_id(t0e9xy9)]
+#[tokio::test]
+async fn deleting_a_threads_lines_leaves_it_on_a_line_since_removed() {
+    let h = harness();
+    let (id, version) = small_collection(&h, 12).await;
+    new_thread(&h, &id, version, 10, 11, "gone soon").await;
+    let doc_id = document_id(&h, &id).await;
+    let text = numbered(
+        (1..=12)
+            .filter(|n| *n != 10 && *n != 11)
+            .map(|n| format!("line {n}")),
+    );
+    let (s, _) = post_version(&h, &doc_id, Some(TOKEN), &text).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let html = reader_page(&h, &id).await;
+    let row = row_and_threads(&html, 9);
+    assert!(
+        row.contains("gone soon") && row.contains("on a line since removed"),
+        "{row}"
+    );
+}
+
+#[test_id(ti1d52c)]
+#[tokio::test]
+async fn editing_a_highlighted_line_shows_text_since_changed() {
+    let h = harness();
+    let (id, _) = small_collection(&h, 12).await;
+    let (s, body) = send(
+        &h.app,
+        Method::POST,
+        &format!("/api/collections/{id}/threads"),
+        Some(TOKEN),
+        Some(json!({"path": "a.txt", "first_line": 4, "last_line": 4, "start_col": 0, "end_col": 4, "body": "this word"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{body}");
+    let doc_id = document_id(&h, &id).await;
+    let text = numbered((1..=12).map(|n| {
+        if n == 4 {
+            "line four, rewritten".into()
+        } else {
+            format!("line {n}")
+        }
+    }));
+    let (s, _) = post_version(&h, &doc_id, Some(TOKEN), &text).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let html = reader_page(&h, &id).await;
+    let row = row_and_threads(&html, 4);
+    assert!(
+        row.contains("this word") && row.contains("text since changed"),
+        "{row}"
+    );
+    assert!(row.contains("ln changed"), "{row}");
+}
+
+#[test_id(tpxf9sz)]
+#[tokio::test]
+async fn a_highlight_on_an_unchanged_line_keeps_its_words() {
+    let h = harness();
+    let (id, _) = small_collection(&h, 6).await;
+    send(
+        &h.app,
+        Method::POST,
+        &format!("/api/collections/{id}/threads"),
+        Some(TOKEN),
+        Some(json!({"path": "a.txt", "first_line": 3, "last_line": 3, "start_col": 0, "end_col": 4, "body": "keep"})),
+    )
+    .await;
+    let doc_id = document_id(&h, &id).await;
+    let text = numbered(
+        ["top".to_string()]
+            .into_iter()
+            .chain((1..=6).map(|n| format!("line {n}"))),
+    );
+    post_version(&h, &doc_id, Some(TOKEN), &text).await;
+    let (_, body) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{id}/threads"),
+        Some(TOKEN),
+        None,
+    )
+    .await;
+    let got: Value = serde_json::from_str(&body).unwrap();
+    let t = &got["items"][0];
+    assert_eq!(
+        (
+            t["first_line"].as_i64(),
+            t["start_col"].as_i64(),
+            t["end_col"].as_i64()
+        ),
+        (Some(4), Some(0), Some(4)),
+        "{body}"
+    );
+    assert!(!reader_page(&h, &id).await.contains("since"));
+}
+
+#[test_id(tv2aakl)]
+#[tokio::test]
+async fn a_new_version_is_in_the_agent_feed_and_refused_without_a_known_token() {
+    let h = harness();
+    let (id, _) = small_collection(&h, 3).await;
+    let doc_id = document_id(&h, &id).await;
+    for token in [None, Some("someone-else")] {
+        let (s, _) = post_version(&h, &doc_id, token, "x\n").await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+    }
+    let (s, _) = post_version(&h, &doc_id, Some(TOKEN), "x\n").await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, body) = send(
+        &h.app,
+        Method::GET,
+        "/api/changes?after=0",
+        Some(TOKEN),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(body.contains("\"version_created\""), "{body}");
+    let (s, _) = post_version(&h, "nosuchdoc", Some(TOKEN), "x\n").await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[test_id(t77cfh8)]
+#[tokio::test]
+async fn versions_are_listed_read_and_only_the_latest_beyond_one_may_be_deleted() {
+    let h = harness();
+    let (id, version) = small_collection(&h, 4).await;
+    new_thread(&h, &id, version, 2, 2, "stay").await;
+    let doc_id = document_id(&h, &id).await;
+    let base = format!("/api/documents/{doc_id}/versions");
+    post_version(&h, &doc_id, Some(TOKEN), "a\nline 2\n").await;
+    let (s, body) = send(&h.app, Method::GET, &base, None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    let list: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(list["items"].as_array().unwrap().len(), 2, "{body}");
+    let (s, body) = send(&h.app, Method::GET, &format!("{base}/2"), None, None).await;
+    assert_eq!(
+        (s, body.contains("a\\nline 2")),
+        (StatusCode::OK, true),
+        "{body}"
+    );
+    let (s, _) = send(
+        &h.app,
+        Method::DELETE,
+        &format!("{base}/1"),
+        Some(TOKEN),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _) = send(
+        &h.app,
+        Method::DELETE,
+        &format!("{base}/2"),
+        Some(TOKEN),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _) = send(
+        &h.app,
+        Method::DELETE,
+        &format!("{base}/1"),
+        Some(TOKEN),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "version 1 is never deleted");
+    let html = reader_page(&h, &id).await;
+    assert!(
+        html.contains("version 1") && row_and_threads(&html, 2).contains("stay"),
+        "{html}"
+    );
+}

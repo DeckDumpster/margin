@@ -76,6 +76,9 @@ pub struct Document {
     pub kind: Kind,
     pub version: i64,
     pub text: String,
+    /// The text of version `version - 1`, for marking what changed; not part of the API.
+    #[serde(skip)]
+    pub previous_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -157,7 +160,8 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<Collection>> 
         .optional()?;
     let Some(mut c) = head else { return Ok(None) };
     let mut stmt = conn.prepare(
-        "SELECT d.id, d.path, d.kind, v.number, v.text, v.id
+        "SELECT d.id, d.path, d.kind, v.number, v.text, v.id,
+                (SELECT p.text FROM versions p WHERE p.document_id = d.id AND p.number = v.number - 1)
          FROM documents d
          JOIN versions v ON v.document_id = d.id
               AND v.number = (SELECT MAX(number) FROM versions WHERE document_id = d.id)
@@ -173,6 +177,7 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<Collection>> 
                 version: r.get(3)?,
                 text: r.get(4)?,
                 version_id: r.get(5)?,
+                previous_text: r.get(6)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;

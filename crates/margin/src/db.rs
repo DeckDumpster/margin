@@ -18,6 +18,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_collections.sql"),
     include_str!("../migrations/0002_threads.sql"),
     include_str!("../migrations/0003_changes.sql"),
+    include_str!("../migrations/0004_versions.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send>;
@@ -178,5 +179,34 @@ mod tests {
         let refused = rt.block_on(db.call(|_| 1));
         assert!(matches!(refused, Err(DbError::QueueFull)));
         park_tx.send(()).unwrap();
+    }
+
+    #[test_id(tevyg7f)]
+    #[test]
+    fn migration_four_keeps_the_change_log_and_admits_version_created() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for (i, sql) in MIGRATIONS.iter().take(3).enumerate() {
+            conn.execute_batch(sql).unwrap();
+            conn.pragma_update(None, "user_version", i + 1).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO changes (collection_id, kind, at) VALUES ('c', 'published', 5)",
+            [],
+        )
+        .unwrap();
+        migrate(&mut conn).unwrap();
+        let kept: i64 = conn
+            .query_row(
+                "SELECT seq FROM changes WHERE kind = 'published'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, 1);
+        conn.execute(
+            "INSERT INTO changes (collection_id, kind, at) VALUES ('c', 'version_created', 6)",
+            [],
+        )
+        .unwrap();
     }
 }

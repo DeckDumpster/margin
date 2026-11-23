@@ -605,6 +605,10 @@
     }
 
     function apply(d) {
+      if (d.reload) {
+        location.reload();
+        return;
+      }
       d.threads.forEach(put);
       d.gone.forEach(function (id) {
         var t = document.getElementById('thread-' + id);
