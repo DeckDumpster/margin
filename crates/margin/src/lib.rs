@@ -12,6 +12,7 @@ pub mod metrics;
 pub mod page;
 pub mod store;
 pub mod threads;
+pub mod versions;
 
 /// The sha this binary was built from, `"unknown"` when the build did not say.
 pub const BUILD_SHA: &str = match option_env!("MARGIN_BUILD_SHA") {

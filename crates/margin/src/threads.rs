@@ -40,6 +40,39 @@ impl Visibility {
     }
 }
 
+/// How a thread's anchor came to be where it is on its version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CarryState {
+    Placed,
+    /// Its lines are gone; it sits at the nearest surviving line.
+    Removed,
+    /// A highlight whose words changed; it fell back to its line.
+    TextChanged,
+}
+
+impl CarryState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CarryState::Placed => "placed",
+            CarryState::Removed => "removed",
+            CarryState::TextChanged => "text_changed",
+        }
+    }
+    pub fn parse(s: &str) -> rusqlite::Result<CarryState> {
+        match s {
+            "placed" => Ok(CarryState::Placed),
+            "removed" => Ok(CarryState::Removed),
+            "text_changed" => Ok(CarryState::TextChanged),
+            other => Err(rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                format!("unknown carry state {other:?} in the database").into(),
+            )),
+        }
+    }
+}
+
 /// Whose eyes a read is for. The reader never sees a held comment, nor a thread with no other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
@@ -93,6 +126,7 @@ pub struct Thread {
     pub last_line: u32,
     pub start_col: Option<u32>,
     pub end_col: Option<u32>,
+    pub carry_state: CarryState,
     pub created_at: i64,
     pub comments: Vec<Comment>,
 }
@@ -232,8 +266,7 @@ pub fn create_thread(conn: &mut Connection, t: &NewThread) -> Result<Thread, Cre
     )
 }
 
-const THREAD_COLUMNS: &str =
-    "t.id, a.version_id, a.first_line, a.last_line, a.start_col, a.end_col, t.created_at";
+const THREAD_COLUMNS: &str = "t.id, a.version_id, a.first_line, a.last_line, a.start_col, a.end_col, t.created_at, a.carry_state";
 
 fn thread_row(r: &rusqlite::Row) -> rusqlite::Result<Thread> {
     Ok(Thread {
@@ -244,6 +277,7 @@ fn thread_row(r: &rusqlite::Row) -> rusqlite::Result<Thread> {
         start_col: r.get(4)?,
         end_col: r.get(5)?,
         created_at: r.get(6)?,
+        carry_state: CarryState::parse(&r.get::<_, String>(7)?)?,
         comments: Vec::new(),
     })
 }

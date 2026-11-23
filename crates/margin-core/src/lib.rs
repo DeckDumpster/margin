@@ -2,6 +2,7 @@
 //! every consumer can be driven by a simulation.
 
 pub mod anchor;
+pub mod carry;
 pub mod highlight;
 pub mod lines;
 

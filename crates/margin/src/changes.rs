@@ -14,6 +14,7 @@ pub enum Kind {
     CommentDeleted,
     Published,
     CollectionUpdated,
+    VersionCreated,
 }
 
 impl Kind {
@@ -25,6 +26,7 @@ impl Kind {
             Kind::CommentDeleted => "comment_deleted",
             Kind::Published => "published",
             Kind::CollectionUpdated => "collection_updated",
+            Kind::VersionCreated => "version_created",
         }
     }
 }

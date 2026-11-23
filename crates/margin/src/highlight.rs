@@ -108,7 +108,7 @@ pub fn normalise(_text: &str, lines: &[&str]) -> String {
 }
 
 impl Highlighter {
-    /// [`Highlighter::lines`], remembered per document version so a reload costs nothing.
+    /// [`Highlighter::lines`], remembered per version row (its id, never reused) so a reload costs nothing.
     pub fn lines_cached(
         &self,
         doc_id: &str,

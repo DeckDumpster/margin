@@ -165,3 +165,8 @@ html:not(.nowrap) .code {
 
 #publish { border-color: currentColor; font-weight: 600; }
 #publish[hidden] { display: none; }
+
+/* A line inserted or edited in this version: a bar at the left edge of its row. */
+.ln.changed .no { box-shadow: inset 3px 0 0 var(--accent); color: var(--fg); }
+.version { margin-left: 0.5rem; font-weight: 400; color: var(--dim); }
+.carry { color: var(--dim); font-size: 0.85rem; font-style: italic; margin: 0 0 0.35rem; }
