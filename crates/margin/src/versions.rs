@@ -31,14 +31,18 @@ struct Carrying {
     state: CarryState,
 }
 
-/// Where a thread lands: the carried anchor and how it got there. A thread already shown as
-/// removed or text-changed stays so: its stored anchor is only a place to show it.
-fn place(c: &Carrying, map: &[Option<u32>], old: &[&str], new: &[&str]) -> (Anchor, CarryState) {
-    let (anchor, state) = match carry::carry(&c.anchor, map, old, new) {
+fn landed(carried: Carried) -> (Anchor, CarryState) {
+    match carried {
         Carried::Placed(a) => (a, CarryState::Placed),
         Carried::TextChanged(a) => (a, CarryState::TextChanged),
         Carried::Removed { at } => (Anchor::lines(at, at), CarryState::Removed),
-    };
+    }
+}
+
+/// Where a thread lands: the carried anchor and how it got there. A thread already shown as
+/// removed or text-changed stays so: its stored anchor is only a place to show it.
+fn place(c: &Carrying, map: &[Option<u32>], old: &[&str], new: &[&str]) -> (Anchor, CarryState) {
+    let (anchor, state) = landed(carry::carry(&c.anchor, map, old, new));
     let state = match (c.state, state) {
         (CarryState::Placed, s) => s,
         (kept, CarryState::Placed) => kept,
@@ -315,9 +319,5 @@ pub fn carry_between(
     let lens: Vec<u32> = old.iter().map(|l| l.chars().count() as u32).collect();
     anchor.validate(&lens).map_err(CarryError::Anchor)?;
     let map = carry::line_map(&old, &new);
-    Ok(match carry::carry(anchor, &map, &old, &new) {
-        Carried::Placed(a) => (a, CarryState::Placed),
-        Carried::TextChanged(a) => (a, CarryState::TextChanged),
-        Carried::Removed { at } => (Anchor::lines(at, at), CarryState::Removed),
-    })
+    Ok(landed(carry::carry(anchor, &map, &old, &new)))
 }

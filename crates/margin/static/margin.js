@@ -830,7 +830,9 @@
       who.textContent = whoText(first, last, !!cols);
       var label = form.querySelector('.carry');
       var why = state === 'removed' ? 'on a line since removed' : state === 'text_changed' ? 'text since changed' : null;
-      if (!why && label) label.remove();
+      // A box already shown as removed or changed stays so, as a thread does across versions.
+      if (!why && label && !answer) label.remove();
+      if (!why && label && answer) why = label.textContent;
       if (why) {
         if (!label) {
           label = document.createElement('div');

@@ -573,7 +573,8 @@ async fn an_unposted_reply_and_an_open_edit_survive_a_version_and_both_save() {
             page,
             "(() => {
               const [a, b] = document.querySelectorAll('#doc-1 .thread');
-              return a.querySelector('form.reply textarea').value === 'unposted reply'
+              return !a.hidden && !b.hidden
+                && a.querySelector('form.reply textarea').value === 'unposted reply'
                 && b.querySelector('form.edit textarea').value === 'edited wording'
                 && b.querySelector('form.edit')._body.textContent === 'second thread';
             })()"
