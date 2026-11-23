@@ -461,10 +461,8 @@
     window.addEventListener('scroll', function () {
       if (pending) placeButton();
     }, { passive: true });
-    // Pressing the button must not collapse the selection it is about to read.
-    cbtn.addEventListener('pointerdown', function (e) {
-      e.preventDefault();
-    });
+    // Pressing the button must not collapse the selection it is about to read. Only mousedown
+    // is stopped: a preventDefault on pointerdown makes WebKit drop the click of a touch tap.
     cbtn.addEventListener('mousedown', function (e) {
       e.preventDefault();
     });
