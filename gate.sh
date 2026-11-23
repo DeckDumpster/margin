@@ -50,7 +50,7 @@ case "$distro" in
   ubuntu-24.04)
     webkit_build="webkit-ubuntu-24.04"
     WEBKIT_SHA256="63b31a5d68d908d9aee2e445b88edc4c1e1d1eba488f5bd7e35668f91315b968"
-    webkit_libs="libicu74 libavif16 libflite1 libjpeg-turbo8 libopus0 libwebp7 libwebpmux3 libxml2 libx264-164 libgstreamer-plugins-base1.0-0 libbacktrace0"
+    webkit_libs="libicu74 libavif16 libflite1 libjpeg-turbo8 libopus0 libwebp7 libwebpmux3 libxml2 libx264-164 libgstreamer-plugins-base1.0-0"
     ;;
   *)
     echo "gate.sh: no WebKit build is pinned for ${distro}; only debian-12 and ubuntu-24.04 are" >&2

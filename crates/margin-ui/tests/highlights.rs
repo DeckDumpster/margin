@@ -144,34 +144,7 @@ const MEASURE: &str = r#"(() => {
 
 /// Scroll line `first` to the middle and select columns `c1` of `first` through `c2` of `last`.
 async fn select(page: &Page, first: u32, c1: u32, last: u32, c2: u32) {
-    eval::<bool>(
-        page,
-        &format!(
-            "(() => {{
-              const at = (n, col) => {{
-                const code = document.querySelector('[data-line=\"' + n + '\"] .code');
-                const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
-                let left = col;
-                for (let t = walker.nextNode(); t; t = walker.nextNode()) {{
-                  if (left <= t.data.length) return [t, left];
-                  left -= t.data.length;
-                }}
-                throw new Error('column past the line');
-              }};
-              document.querySelector('[data-line=\"{first}\"]').scrollIntoView({{block: 'center'}});
-              const [a, ao] = at({first}, {c1});
-              const [b, bo] = at({last}, {c2});
-              const r = document.createRange();
-              r.setStart(a, ao);
-              r.setEnd(b, bo);
-              const s = getSelection();
-              s.removeAllRanges();
-              s.addRange(r);
-              return true;
-            }})()"
-        ),
-    )
-    .await;
+    eval::<bool>(page, &support::select_js(first, c1, last, c2)).await;
 }
 
 /// Press the Comment button, type and post; wait until `threads` threads are on the page.

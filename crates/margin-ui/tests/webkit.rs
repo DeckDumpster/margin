@@ -9,29 +9,6 @@ mod support;
 
 use support::webkit::WebKit;
 
-const SELECT_WORDS: &str = "(() => {
-  const at = (n, col) => {
-    const code = document.querySelector('[data-line=\"' + n + '\"] .code');
-    const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
-    let left = col;
-    for (let t = walker.nextNode(); t; t = walker.nextNode()) {
-      if (left <= t.data.length) return [t, left];
-      left -= t.data.length;
-    }
-    throw new Error('column past the line');
-  };
-  document.querySelector('[data-line=\"10\"]').scrollIntoView({block: 'center'});
-  const [a, ao] = at(10, 3);
-  const [b, bo] = at(11, 10);
-  const r = document.createRange();
-  r.setStart(a, ao);
-  r.setEnd(b, bo);
-  const s = getSelection();
-  s.removeAllRanges();
-  s.addRange(r);
-  return true;
-})()";
-
 #[test_id(tzgknyn)]
 #[tokio::test]
 #[ignore = "needs MARGIN_WEBKIT; gate.sh runs it with --ignored"]
@@ -56,7 +33,7 @@ async fn a_webkit_touch_tap_opens_boxes_from_a_line_number_and_from_selected_wor
     .await;
 
     // Selected words get the Comment button; tapping it opens the box with the columns.
-    wk.eval::<bool>(SELECT_WORDS).await;
+    wk.eval::<bool>(&support::select_js(10, 3, 11, 10)).await;
     wk.wait_for(
         "the Comment button showed",
         "(() => { const b = document.getElementById('hl-comment'); return b && !b.hidden; })()",

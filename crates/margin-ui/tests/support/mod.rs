@@ -94,3 +94,33 @@ pub async fn serve() -> (String, tempfile::TempDir) {
     tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
     (url, dir)
 }
+
+/// Script that scrolls line `first` to the middle and selects columns `c1` of `first` through
+/// `c2` of `last`; it evaluates to `true`.
+#[allow(dead_code)]
+pub fn select_js(first: u32, c1: u32, last: u32, c2: u32) -> String {
+    format!(
+        "(() => {{
+          const at = (n, col) => {{
+            const code = document.querySelector('[data-line=\"' + n + '\"] .code');
+            const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+            let left = col;
+            for (let t = walker.nextNode(); t; t = walker.nextNode()) {{
+              if (left <= t.data.length) return [t, left];
+              left -= t.data.length;
+            }}
+            throw new Error('column past the line');
+          }};
+          document.querySelector('[data-line=\"{first}\"]').scrollIntoView({{block: 'center'}});
+          const [a, ao] = at({first}, {c1});
+          const [b, bo] = at({last}, {c2});
+          const r = document.createRange();
+          r.setStart(a, ao);
+          r.setEnd(b, bo);
+          const s = getSelection();
+          s.removeAllRanges();
+          s.addRange(r);
+          return true;
+        }})()"
+    )
+}

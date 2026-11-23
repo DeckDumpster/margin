@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
-const SIGNAL_DEADLINE: Duration = Duration::from_secs(30);
+const SIGNAL_DEADLINE: Duration = Duration::from_secs(90);
 
 pub struct WebKit {
     child: Child,
