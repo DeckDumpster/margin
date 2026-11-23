@@ -239,9 +239,8 @@ async fn reader_comments(app: &Router, id: &str) {
     )
     .await;
     let c: Value = serde_json::from_str(&body).unwrap();
-    let version_id = c["documents"][0]["versions"][0]["id"]
+    let version_id = c["documents"][0]["version_id"]
         .as_i64()
-        .or_else(|| c["documents"][0]["version_id"].as_i64())
         .unwrap_or_else(|| panic!("no version id in {body}"));
     let (s, b) = send(
         app,
@@ -513,6 +512,12 @@ fn scratch_not_reporting_the_sha_fails_the_deploy_and_names_its_unit() {
         run.stderr
     );
     assert!(run.stdout.contains("margin production"), "{}", run.stdout);
+    assert!(
+        run.stderr
+            .contains("journal: --user -u margin-scratch.service -n 20"),
+        "{}",
+        run.stderr
+    );
 }
 
 #[test_id(tyolw9t)]
