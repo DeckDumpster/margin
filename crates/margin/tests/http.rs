@@ -900,7 +900,14 @@ async fn new_highlight(
 async fn rust_collection(h: &Harness, text: &str) -> (String, i64) {
     let created = post(&h.app, "t", vec![doc("a.rs", text)]).await;
     let id = created["id"].as_str().unwrap().to_string();
-    let (_, body) = send(&h.app, Method::GET, &format!("/api/collections/{id}"), None, None).await;
+    let (_, body) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{id}"),
+        None,
+        None,
+    )
+    .await;
     let got: Value = serde_json::from_str(&body).unwrap();
     (id, got["documents"][0]["version_id"].as_i64().unwrap())
 }
@@ -980,7 +987,11 @@ async fn posting_columns_stores_them_and_the_page_wraps_exactly_those_characters
 
     let (_, page) = send(&h.app, Method::GET, &format!("/c/{id}"), None, None).await;
     let line1 = code_of(&page, 1);
-    assert_eq!(text_of(&line1), "fn main() {", "the line's text is untouched");
+    assert_eq!(
+        text_of(&line1),
+        "fn main() {",
+        "the line's text is untouched"
+    );
     let runs = runs_of(&line1);
     assert_eq!(runs.len(), 1, "{line1}");
     assert_eq!(text_of(&runs[0].1), "main() {");

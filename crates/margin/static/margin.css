@@ -11,6 +11,10 @@
   --c-number: #0550ae;
   --c-type: #953800;
   --c-func: #8250df;
+  --l0: #0969da;
+  --l1: #bf8700;
+  --l2: #1a7f37;
+  --l3: #cf222e;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -25,6 +29,10 @@
     --c-number: #79c0ff;
     --c-type: #ffa657;
     --c-func: #d2a8ff;
+    --l0: #58a6ff;
+    --l1: #e3b341;
+    --l2: #56d364;
+    --l3: #ff7b72;
   }
 }
 * { box-sizing: border-box; }
@@ -86,10 +94,13 @@ body[data-gesture] { -webkit-user-select: none; user-select: none; }
   bottom: 0;
   left: calc(min(var(--lane), 3) * 5px + 1px);
   width: 4px;
-  background: var(--accent);
+  background: var(--l3);
   opacity: 0.85;
   cursor: pointer;
 }
+.mark[data-lane="0"] { background: var(--l0); }
+.mark[data-lane="1"] { background: var(--l1); }
+.mark[data-lane="2"] { background: var(--l2); }
 .mark::after { content: ""; position: absolute; top: 0; bottom: 0; left: -1px; right: -1px; }
 
 /* Threads and the new-comment box open in place under a line. */
@@ -117,3 +128,36 @@ html:not(.nowrap) .code {
 .constant.numeric, .constant.language { color: var(--c-number); }
 .entity.name.function, .support.function { color: var(--c-func); }
 .entity.name.type, .entity.name.struct, .entity.name.enum, .support.type, .storage.type { color: var(--c-type); }
+
+/* Highlighted words: each lane's colour tints the run and underlines it at its own height, so
+   words two highlights share show both. Lanes past 3 share the last colour, as in the gutter. */
+.hl {
+  --t0: transparent; --t1: transparent; --t2: transparent; --t3: transparent;
+  --u0: transparent; --u1: transparent; --u2: transparent; --u3: transparent;
+  background-image:
+    linear-gradient(var(--t0), var(--t0)), linear-gradient(var(--t1), var(--t1)),
+    linear-gradient(var(--t2), var(--t2)), linear-gradient(var(--t3), var(--t3));
+  box-shadow:
+    inset 0 -2px 0 0 var(--u0), inset 0 -4px 0 0 var(--u1),
+    inset 0 -6px 0 0 var(--u2), inset 0 -8px 0 0 var(--u3);
+  cursor: pointer;
+}
+.hl-l0 { --t0: color-mix(in srgb, var(--l0) 24%, transparent); --u0: var(--l0); }
+.hl-l1 { --t1: color-mix(in srgb, var(--l1) 24%, transparent); --u1: var(--l1); }
+.hl-l2 { --t2: color-mix(in srgb, var(--l2) 24%, transparent); --u2: var(--l2); }
+.hl-l3 { --t3: color-mix(in srgb, var(--l3) 24%, transparent); --u3: var(--l3); }
+
+/* The Comment button beside a text selection, below its end so the phone's own menu stays clear. */
+#hl-comment {
+  position: fixed;
+  z-index: 10;
+  min-height: 2.75rem;
+  padding: 0 1rem;
+  font: 15px/1 system-ui, sans-serif;
+  color: #fff;
+  background: var(--accent);
+  border: 0;
+  border-radius: 0.4rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+#hl-comment[hidden] { display: none; }

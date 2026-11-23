@@ -148,7 +148,12 @@ pub fn tint(html: &str, segments: &[Segment], threads: &[(u16, String)]) -> Stri
         let ids: Vec<&str> = seg
             .lanes
             .iter()
-            .filter_map(|l| threads.iter().find(|(t, _)| t == l).map(|(_, id)| id.as_str()))
+            .filter_map(|l| {
+                threads
+                    .iter()
+                    .find(|(t, _)| t == l)
+                    .map(|(_, id)| id.as_str())
+            })
             .collect();
         format!(
             "<span class=\"hl {}\" data-threads=\"{}\">",

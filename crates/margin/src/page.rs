@@ -3,10 +3,10 @@
 use askama::Template;
 
 use crate::highlight::Highlighter;
-use margin_core::anchor::Anchor;
-use margin_core::highlight;
 use crate::store::Collection;
 use crate::threads::{self, READER};
+use margin_core::anchor::Anchor;
+use margin_core::highlight;
 
 pub struct MarkView {
     pub thread: String,
