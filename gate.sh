@@ -22,7 +22,7 @@ for lib in libasound2 libatk-bridge2.0-0 libatk1.0-0 libcups2 libdbus-1-3 libdrm
   fonts-noto-color-emoji; do
   found=""
   for cand in "$lib" "${lib}t64"; do
-    if apt-cache show "$cand" >/dev/null 2>&1; then found="$cand"; break; fi
+    if apt-get install -s --no-install-recommends "$cand" >/dev/null 2>&1; then found="$cand"; break; fi
   done
   if [ -z "$found" ]; then
     echo "gate.sh: this archive has neither ${lib} nor ${lib}t64" >&2
