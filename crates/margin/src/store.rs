@@ -81,6 +81,58 @@ pub struct Document {
     pub previous_text: Option<String>,
 }
 
+/// Where a review's documents came from: a repository's web URL and a commit in it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Source {
+    pub repository: String,
+    pub commit: String,
+}
+
+impl Source {
+    /// The last segment of the repository's URL.
+    pub fn name(&self) -> &str {
+        self.repository.rsplit('/').next().unwrap_or("")
+    }
+
+    /// Check the fields and normalise the repository: a trailing `/` and `.git` are dropped.
+    /// The error names the field at fault.
+    pub fn normalised(&self) -> Result<Source, String> {
+        let r = self.repository.as_str();
+        let bad =
+            "source.repository must be http(s)://host/…/name with no whitespace, query or fragment";
+        let rest = r
+            .strip_prefix("https://")
+            .or_else(|| r.strip_prefix("http://"))
+            .ok_or(bad)?;
+        if r.chars().any(|c| c.is_whitespace() || c.is_control())
+            || r.contains('?')
+            || r.contains('#')
+        {
+            return Err(bad.into());
+        }
+        let trimmed = r.trim_end_matches('/');
+        let trimmed = trimmed.strip_suffix(".git").unwrap_or(trimmed);
+        let trimmed = trimmed.trim_end_matches('/');
+        let path = trimmed.get(r.len() - rest.len()..).ok_or(bad)?;
+        match path.split_once('/') {
+            Some((host, path)) if !host.is_empty() && !path.is_empty() => {}
+            _ => return Err(bad.into()),
+        }
+        let ok = self.commit.len() == 40
+            && self
+                .commit
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        if !ok {
+            return Err("source.commit must be 40 lowercase hex characters".into());
+        }
+        Ok(Source {
+            repository: trimmed.to_string(),
+            commit: self.commit.clone(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Collection {
     pub id: String,
@@ -90,6 +142,7 @@ pub struct Collection {
     pub created_by: String,
     pub created_at: i64,
     pub updated_at: i64,
+    pub source: Option<Source>,
     pub documents: Vec<Document>,
 }
 
@@ -107,6 +160,7 @@ pub struct Patch {
     pub title: Option<String>,
     pub cover_note: Option<String>,
     pub state: Option<State>,
+    pub source: Option<Source>,
 }
 
 pub struct NewCollection<'a> {
@@ -115,6 +169,7 @@ pub struct NewCollection<'a> {
     pub cover_note: &'a str,
     pub created_by: &'a str,
     pub now: i64,
+    pub source: Option<&'a Source>,
     /// (document id, document) in display order.
     pub documents: &'a [(String, NewDocument)],
 }
@@ -122,9 +177,17 @@ pub struct NewCollection<'a> {
 pub fn create(conn: &mut Connection, c: &NewCollection) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
     tx.execute(
-        "INSERT INTO collections (id, title, cover_note, state, created_by, created_at, updated_at)
-         VALUES (?1, ?2, ?3, 'open', ?4, ?5, ?5)",
-        params![c.id, c.title, c.cover_note, c.created_by, c.now],
+        "INSERT INTO collections (id, title, cover_note, state, created_by, created_at, updated_at, source_repository, source_commit)
+         VALUES (?1, ?2, ?3, 'open', ?4, ?5, ?5, ?6, ?7)",
+        params![
+            c.id,
+            c.title,
+            c.cover_note,
+            c.created_by,
+            c.now,
+            c.source.map(|s| &s.repository),
+            c.source.map(|s| &s.commit)
+        ],
     )?;
     for (position, (doc_id, d)) in c.documents.iter().enumerate() {
         tx.execute(
@@ -142,7 +205,8 @@ pub fn create(conn: &mut Connection, c: &NewCollection) -> rusqlite::Result<()> 
 pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<Collection>> {
     let head = conn
         .query_row(
-            "SELECT id, title, cover_note, state, created_by, created_at, updated_at FROM collections WHERE id = ?1",
+            "SELECT id, title, cover_note, state, created_by, created_at, updated_at, source_repository, source_commit
+             FROM collections WHERE id = ?1",
             [id],
             |r| {
                 Ok(Collection {
@@ -153,6 +217,10 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<Collection>> 
                     created_by: r.get(4)?,
                     created_at: r.get(5)?,
                     updated_at: r.get(6)?,
+                    source: match (r.get(7)?, r.get(8)?) {
+                        (Some(repository), Some(commit)) => Some(Source { repository, commit }),
+                        _ => None,
+                    },
                     documents: Vec::new(),
                 })
             },
@@ -217,9 +285,19 @@ pub fn patch(conn: &mut Connection, id: &str, p: &Patch, now: i64) -> rusqlite::
             title = COALESCE(?2, title),
             cover_note = COALESCE(?3, cover_note),
             state = COALESCE(?4, state),
+            source_repository = COALESCE(?6, source_repository),
+            source_commit = COALESCE(?7, source_commit),
             updated_at = ?5
          WHERE id = ?1",
-        params![id, p.title, p.cover_note, p.state.map(State::as_str), now],
+        params![
+            id,
+            p.title,
+            p.cover_note,
+            p.state.map(State::as_str),
+            now,
+            p.source.as_ref().map(|s| &s.repository),
+            p.source.as_ref().map(|s| &s.commit)
+        ],
     )?;
     if n > 0 {
         crate::changes::record(

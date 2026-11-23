@@ -1231,6 +1231,7 @@ mod home {
                     title: &title,
                     cover_note: &note,
                     created_by: &by,
+                    source: None,
                     now: at,
                     documents: &docs,
                 },
@@ -2004,4 +2005,179 @@ async fn the_page_lists_its_files_with_line_and_comment_counts_and_not_held_ones
     .await;
     let html = page(&h, &id).await;
     assert_eq!(file_rows(&html)[0].2, "1 line · 1 comment");
+}
+
+const COMMIT: &str = "4ea198c8b0f1d2e3a4b5c6d7e8f9a0b1c2d3e4f5";
+
+async fn get_page(h: &Harness, id: &str) -> String {
+    let (s, b) = send(&h.app, Method::GET, &format!("/c/{id}"), None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    b
+}
+
+fn meta_line(html: &str) -> String {
+    let start = html.find("<p class=\"meta\">").expect("a meta line");
+    let rest = &html[start..];
+    rest[..rest.find("</p>").unwrap()].to_string()
+}
+
+async fn get_json(h: &Harness, id: &str) -> Value {
+    let (_, b) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{id}"),
+        None,
+        None,
+    )
+    .await;
+    serde_json::from_str(&b).unwrap()
+}
+
+fn spira_source() -> Value {
+    json!({"repository": "https://git.example.com/org/spira.git", "commit": COMMIT})
+}
+
+fn linked() -> String {
+    format!(" · <a href=\"https://git.example.com/org/spira/commit/{COMMIT}\">spira@4ea198c</a>")
+}
+
+#[test_id(tg1uxpu)]
+#[tokio::test]
+async fn a_review_posted_with_a_source_returns_it_normalised_and_links_it_in_the_meta_line() {
+    let h = harness();
+    let (s, b) = send(
+        &h.app,
+        Method::POST,
+        "/api/collections",
+        Some(TOKEN),
+        Some(json!({"title": "t", "source": spira_source(), "documents": [doc("a", "x\n")]})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    let id = serde_json::from_str::<Value>(&b).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let got = get_json(&h, &id).await;
+    assert_eq!(
+        got["source"],
+        json!({"repository": "https://git.example.com/org/spira", "commit": COMMIT})
+    );
+    assert!(meta_line(&get_page(&h, &id).await).ends_with(&linked()));
+}
+
+#[test_id(tnyge5w)]
+#[tokio::test]
+async fn a_source_patched_onto_a_review_without_one_is_returned_and_linked() {
+    let h = harness();
+    let id = post(&h.app, "t", vec![doc("a", "x\n")]).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, b) = send(
+        &h.app,
+        Method::PATCH,
+        &format!("/api/collections/{id}"),
+        Some(TOKEN),
+        Some(json!({"source": spira_source()})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let got = get_json(&h, &id).await;
+    assert_eq!(
+        got["source"]["repository"],
+        "https://git.example.com/org/spira"
+    );
+    assert!(meta_line(&get_page(&h, &id).await).ends_with(&linked()));
+}
+
+#[test_id(tr1qry7)]
+#[tokio::test]
+async fn a_source_that_is_not_a_web_url_or_has_a_short_commit_is_refused_naming_the_field() {
+    let h = harness();
+    let id = post(&h.app, "t", vec![doc("a", "x\n")]).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for (source, field) in [
+        (
+            json!({"repository": "javascript:alert(1)", "commit": COMMIT}),
+            "repository",
+        ),
+        (
+            json!({"repository": "https://h/a b", "commit": COMMIT}),
+            "repository",
+        ),
+        (
+            json!({"repository": "https://h/a?x=1", "commit": COMMIT}),
+            "repository",
+        ),
+        (
+            json!({"repository": "https://h", "commit": COMMIT}),
+            "repository",
+        ),
+        (
+            json!({"repository": "https://h/org/spira", "commit": "4ea198c"}),
+            "commit",
+        ),
+        (
+            json!({"repository": "https://h/org/spira", "commit": COMMIT.to_uppercase()}),
+            "commit",
+        ),
+    ] {
+        let (s, b) = send(
+            &h.app,
+            Method::POST,
+            "/api/collections",
+            Some(TOKEN),
+            Some(json!({"title": "t", "source": source, "documents": [doc("a", "x")]})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{source}: {b}");
+        assert!(b.contains(field), "{b}");
+        let (s, b) = send(
+            &h.app,
+            Method::PATCH,
+            &format!("/api/collections/{id}"),
+            Some(TOKEN),
+            Some(json!({"source": source})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{source}: {b}");
+        assert!(b.contains(field), "{b}");
+    }
+}
+
+#[test_id(tj94idx)]
+#[tokio::test]
+async fn a_review_without_a_source_has_a_null_source_and_no_link_in_the_meta_line() {
+    let h = harness();
+    let id = post(&h.app, "t", vec![doc("a", "x\n")]).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(get_json(&h, &id).await["source"].is_null());
+    assert_eq!(
+        meta_line(&get_page(&h, &id).await),
+        "<p class=\"meta\">open · 1 document"
+    );
+}
+
+#[test_id(t6oxrh5)]
+#[tokio::test]
+async fn the_page_header_and_the_sticky_bar_each_link_home() {
+    let h = harness();
+    let id = post(&h.app, "t", vec![doc("a", "x\n")]).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let page = get_page(&h, &id).await;
+    for open in ["<header class=\"top\">", "<nav class=\"bar\""] {
+        let from = &page[page.find(open).unwrap()..];
+        let section = &from[..from.find("</header>").min(from.find("</nav>")).unwrap()];
+        assert!(
+            section.contains("<a class=\"home\" href=\"/\">Margin</a>"),
+            "{open}"
+        );
+    }
 }

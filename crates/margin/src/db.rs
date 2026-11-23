@@ -19,6 +19,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0002_threads.sql"),
     include_str!("../migrations/0003_changes.sql"),
     include_str!("../migrations/0004_versions.sql"),
+    include_str!("../migrations/0005_source.sql"),
 ];
 
 /// The `user_version` of a database this binary has fully migrated.
@@ -213,5 +214,35 @@ mod tests {
             [],
         )
         .unwrap();
+    }
+
+    #[test_id(ts5bx15)]
+    #[test]
+    fn a_version_four_database_keeps_its_collection_through_the_source_migration() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for (i, sql) in MIGRATIONS.iter().take(4).enumerate() {
+            conn.execute_batch(sql).unwrap();
+            conn.pragma_update(None, "user_version", i + 1).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO collections (id, title, cover_note, state, created_by, created_at, updated_at)
+             VALUES ('c', 'kept', '', 'open', 'a', 1, 1)",
+            [],
+        )
+        .unwrap();
+        migrate(&mut conn).unwrap();
+        let (title, source): (String, Option<String>) = conn
+            .query_row(
+                "SELECT title, source_repository FROM collections WHERE id = 'c'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((title.as_str(), source), ("kept", None));
+        assert!(
+            conn.execute("UPDATE collections SET source_repository = 'x'", [])
+                .is_err(),
+            "a repository without a commit is refused"
+        );
     }
 }

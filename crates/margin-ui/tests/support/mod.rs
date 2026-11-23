@@ -98,6 +98,7 @@ pub async fn serve_docs(
                     cover_note: "A long file.",
                     created_by: "ui",
                     now: 0,
+                    source: None,
                     documents: &documents,
                 },
             )
