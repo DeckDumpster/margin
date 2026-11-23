@@ -27,7 +27,7 @@ impl Visibility {
             Visibility::Held => "held",
         }
     }
-    fn parse(s: &str) -> rusqlite::Result<Visibility> {
+    pub(crate) fn parse(s: &str) -> rusqlite::Result<Visibility> {
         match s {
             "now" => Ok(Visibility::Now),
             "held" => Ok(Visibility::Held),

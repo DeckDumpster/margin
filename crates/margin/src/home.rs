@@ -8,6 +8,7 @@ use margin_core::waits::{Shown, Waiter, waits_on};
 use rusqlite::{Connection, params, params_from_iter};
 
 use crate::store::State;
+use crate::threads::Visibility;
 
 pub const PAGE: usize = 50;
 
@@ -92,16 +93,9 @@ pub fn page(
     ))?;
     let mut threads: BTreeMap<String, (String, Vec<(String, Shown)>)> = BTreeMap::new();
     let rows = stmt.query_map(params_from_iter(heads.iter().map(|h| &h.id)), |r| {
-        let shown = match r.get::<_, String>(3)?.as_str() {
-            "now" => Shown::Now,
-            "held" => Shown::Held,
-            other => {
-                return Err(rusqlite::Error::FromSqlConversionFailure(
-                    3,
-                    rusqlite::types::Type::Text,
-                    format!("unknown visibility {other:?} in the database").into(),
-                ));
-            }
+        let shown = match Visibility::parse(&r.get::<_, String>(3)?)? {
+            Visibility::Now => Shown::Now,
+            Visibility::Held => Shown::Held,
         };
         Ok((
             r.get::<_, String>(0)?,

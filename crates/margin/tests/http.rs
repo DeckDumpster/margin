@@ -1373,6 +1373,20 @@ mod home {
         let (status, _) = send(&h.app, Method::GET, "/?after=nonsense", None, None).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
+
+    #[test_id(t3be2lb)]
+    #[tokio::test]
+    async fn the_home_page_pushes_its_render_metric() {
+        use margin::metrics::Event;
+        let (app, _db, events, _dir) = tiny_queue_harness();
+        let (status, _) = send(&app, Method::GET, "/", None, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let pushed: Vec<Event> = events.try_iter().collect();
+        assert!(
+            pushed.iter().any(|e| matches!(e, Event::HomeRender { .. })),
+            "{pushed:?}"
+        );
+    }
 }
 
 fn numbered(lines: impl IntoIterator<Item = String>) -> String {
