@@ -30,6 +30,7 @@ const BOUNDS: [f64; 11] = [
 pub const REQUESTS: &str = "margin_http_requests";
 pub const REQUEST_SECONDS: &str = "margin_http_request_seconds";
 pub const RENDER_SECONDS: &str = "margin_page_render_seconds";
+pub const HOME_RENDER_SECONDS: &str = "margin_home_render_seconds";
 pub const QUEUE_FULL: &str = "margin_db_queue_full";
 pub const COMMENTS: &str = "margin_comments";
 pub const FEED_WAIT_SECONDS: &str = "margin_feed_wait_seconds";
@@ -43,6 +44,10 @@ pub enum Event {
         seconds: f64,
     },
     Render {
+        seconds: f64,
+    },
+    /// The home page was answered after this long, query included.
+    HomeRender {
         seconds: f64,
     },
     QueueFull,
@@ -157,6 +162,7 @@ pub struct Aggregate {
     requests: BTreeMap<(String, u16), u64>,
     request_seconds: BTreeMap<String, Hist>,
     render_seconds: Hist,
+    home_render_seconds: Hist,
     queue_full: u64,
     comments: BTreeMap<(&'static str, &'static str), u64>,
     feed_wait_seconds: Hist,
@@ -187,6 +193,7 @@ impl Aggregate {
                     .add(*seconds);
             }
             Event::Render { seconds } => self.render_seconds.add(*seconds),
+            Event::HomeRender { seconds } => self.home_render_seconds.add(*seconds),
             Event::QueueFull => self.queue_full += 1,
             Event::Comment {
                 author_kind,
@@ -256,6 +263,13 @@ impl Aggregate {
                 RENDER_SECONDS,
                 Data::Histogram(Histogram {
                     data_points: vec![hist_point(&self.render_seconds, vec![])],
+                    aggregation_temporality: cumulative,
+                }),
+            ),
+            metric(
+                HOME_RENDER_SECONDS,
+                Data::Histogram(Histogram {
+                    data_points: vec![hist_point(&self.home_render_seconds, vec![])],
                     aggregation_temporality: cumulative,
                 }),
             ),
@@ -437,6 +451,7 @@ mod tests {
             seconds: 0.02,
         });
         agg.add(&Event::Render { seconds: 0.03 });
+        agg.add(&Event::HomeRender { seconds: 0.01 });
         agg.add(&Event::QueueFull);
         agg.add(&Event::Comment {
             author_kind: "agent",
@@ -451,6 +466,7 @@ mod tests {
                 REQUESTS,
                 REQUEST_SECONDS,
                 RENDER_SECONDS,
+                HOME_RENDER_SECONDS,
                 QUEUE_FULL,
                 COMMENTS,
                 FEED_WAIT_SECONDS,

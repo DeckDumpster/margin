@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::changes::{self, Kind, Logged};
 
 /// The author value of every comment written from the reader page.
-pub const READER: &str = "reader";
+pub const READER: &str = margin_core::waits::READER;
 /// Longest comment body accepted, in bytes.
 pub const MAX_BODY: usize = 20_000;
 
@@ -27,7 +27,7 @@ impl Visibility {
             Visibility::Held => "held",
         }
     }
-    fn parse(s: &str) -> rusqlite::Result<Visibility> {
+    pub(crate) fn parse(s: &str) -> rusqlite::Result<Visibility> {
         match s {
             "now" => Ok(Visibility::Now),
             "held" => Ok(Visibility::Held),

@@ -71,6 +71,7 @@ pub fn router(state: AppState) -> Router {
             "/api/comments/{cid}",
             patch(agent_edit_comment).delete(agent_delete_comment),
         )
+        .route("/", get(home))
         .route("/c/{id}", get(reader))
         .route("/c/{id}/publish", post(publish))
         .route("/c/{id}/threads", get(list_threads).post(create_thread))
@@ -419,6 +420,36 @@ async fn reader(
     .map_err(|e| ApiError::Internal(e.to_string()))?
     .map_err(|e| ApiError::Internal(e.to_string()))?;
     s.metrics.push(Event::Render {
+        seconds: started.elapsed().as_secs_f64(),
+    });
+    Ok(Html(html))
+}
+
+#[derive(Deserialize)]
+struct HomeQuery {
+    after: Option<String>,
+}
+
+async fn home(
+    State(s): State<AppState>,
+    Query(q): Query<HomeQuery>,
+) -> Result<Html<String>, ApiError> {
+    let after = match q.after {
+        None => None,
+        Some(c) => Some(parse_cursor(&c)?),
+    };
+    let started = Instant::now();
+    let listing = s
+        .run(move |conn| {
+            crate::home::page(
+                conn,
+                crate::home::PAGE,
+                after.as_ref().map(|(a, i)| (*a, i.as_str())),
+            )
+        })
+        .await?;
+    let html = crate::home::render(listing).map_err(|e| ApiError::Internal(e.to_string()))?;
+    s.metrics.push(Event::HomeRender {
         seconds: started.elapsed().as_secs_f64(),
     });
     Ok(Html(html))

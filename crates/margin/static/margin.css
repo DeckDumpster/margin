@@ -170,3 +170,14 @@ html:not(.nowrap) .code {
 .ln.changed .no { box-shadow: inset 3px 0 0 var(--accent); color: var(--fg); }
 .version { margin-left: 0.5rem; font-weight: 400; color: var(--dim); }
 .carry { color: var(--dim); font-size: 0.85rem; font-style: italic; margin: 0 0 0.35rem; }
+
+/* The home page: one tappable card per collection, never wider than the screen. */
+.collections { list-style: none; margin: 0; padding: 0; }
+.entry { display: block; min-height: 2.75rem; margin: 0 0 0.6rem; padding: 0.6rem 0.75rem; color: inherit; text-decoration: none; border: 1px solid var(--rule); border-radius: 0.4rem; }
+.entry:hover, .entry:focus-visible { border-color: var(--accent); }
+.etitle { font-weight: 600; }
+.badge { color: var(--dim); font-size: 0.85rem; border: 1px solid var(--rule); border-radius: 0.3rem; padding: 0 0.35rem; }
+.note, .waits { display: block; min-width: 0; }
+.note { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.waits { margin-top: 0.2rem; font-size: 0.9rem; }
+.older { display: inline-block; min-height: 2.75rem; line-height: 2.75rem; color: var(--accent); }

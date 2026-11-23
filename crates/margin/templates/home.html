@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>margin</title>
+<link rel="stylesheet" href="/static/margin.css">
+</head>
+<body class="home">
+<header class="top"><h1 class="title">margin</h1></header>
+<p class="meta">What is open, and what waits on whom.</p>
+{% if entries.is_empty() %}<p class="empty">Nothing is open.</p>{% endif %}
+<ul class="collections">
+{% for e in entries %}<li><a class="entry" href="/c/{{ e.id }}">
+<span class="etitle">{{ e.title }}</span>{% if e.published %} <span class="badge">published</span>{% endif %}
+{% if !e.first_line.is_empty() %}<span class="note">{{ e.first_line }}</span>{% endif %}
+<span class="waits">{% if e.waits.is_empty() %}nothing waiting{% else %}{{ e.waits }}{% endif %}</span>
+</a></li>
+{% endfor %}</ul>
+{% if let Some(c) = older %}<p><a class="older" href="/?after={{ c }}">older</a></p>{% endif %}
+</body>
+</html>
