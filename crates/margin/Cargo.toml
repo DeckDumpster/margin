@@ -18,7 +18,7 @@ sha2 = "0.10"
 getrandom = "0.3"
 opentelemetry-proto = { version = "0.30", default-features = false, features = ["gen-tonic-messages", "metrics"] }
 prost = "0.13"
-ureq = "3"
+ureq = { version = "3", default-features = false }
 
 [dev-dependencies]
 margin-test-id = { path = "../margin-test-id" }
