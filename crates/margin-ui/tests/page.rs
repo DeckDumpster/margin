@@ -110,9 +110,10 @@ async fn serve_with_cover(cover: &str) -> (String, tempfile::TempDir) {
         metrics: Metrics::detached(),
         highlighter: Arc::new(Highlighter::new()),
     };
+    let cover = cover.to_string();
     state
         .db
-        .call(|conn| {
+        .call(move |conn| {
             let docs = vec![(
                 "d1".to_string(),
                 NewDocument {
@@ -126,7 +127,7 @@ async fn serve_with_cover(cover: &str) -> (String, tempfile::TempDir) {
                 &NewCollection {
                     id: "fixture",
                     title: "Fixture",
-                    cover_note: cover,
+                    cover_note: &cover,
                     created_by: "ui",
                     now: 0,
                     documents: &docs,
@@ -328,7 +329,12 @@ async fn a_cover_note_with_wide_code_and_a_table_never_scrolls_sideways_on_a_pho
     let (mut browser, pump) = support::launch(dir.path()).await;
     let page = browser.new_page("about:blank").await.unwrap();
     viewport(&page, PHONE, 844, true).await;
-    page.goto(&url).await.unwrap().wait_for_navigation().await.unwrap();
+    page.goto(&url)
+        .await
+        .unwrap()
+        .wait_for_navigation()
+        .await
+        .unwrap();
     let over: Vec<String> = page
         .evaluate(
             "[...document.querySelectorAll('.cover, .cover *')].filter(e => e.getBoundingClientRect().right > 390.5).map(e => e.tagName)",
@@ -345,7 +351,12 @@ async fn a_cover_note_with_wide_code_and_a_table_never_scrolls_sideways_on_a_pho
         .unwrap();
     assert_eq!(tables, 1);
     assert!(over.is_empty(), "past the viewport: {over:?}");
-    let sw: u32 = page.evaluate("document.documentElement.scrollWidth").await.unwrap().into_value().unwrap();
+    let sw: u32 = page
+        .evaluate("document.documentElement.scrollWidth")
+        .await
+        .unwrap()
+        .into_value()
+        .unwrap();
     assert!(sw <= PHONE, "page scrolls sideways: {sw}");
     browser.close().await.unwrap();
     let _ = pump.await;

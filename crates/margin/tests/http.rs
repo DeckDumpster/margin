@@ -252,7 +252,10 @@ async fn the_cover_note_is_served_as_markdown_with_its_raw_html_escaped() {
     let cover = html.split("<section class=\"cover\">").nth(1).unwrap();
     let cover = cover.split("</section>").next().unwrap();
     assert!(cover.contains("<h2>Head</h2>"), "{cover}");
-    assert!(cover.contains("&lt;b&gt;") && !cover.contains("<b>"), "{cover}");
+    assert!(
+        cover.contains("&lt;b&gt;") && !cover.contains("<b>"),
+        "{cover}"
+    );
 }
 
 #[test_id(t3hmmb3)]

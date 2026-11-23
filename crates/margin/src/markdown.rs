@@ -6,7 +6,10 @@ use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, html};
 /// Whether a link to `dest` may stay a link.
 fn safe_link(dest: &str) -> bool {
     let d = dest.trim().to_ascii_lowercase();
-    d.starts_with("http://") || d.starts_with("https://") || d.starts_with("mailto:") || d.starts_with('#')
+    d.starts_with("http://")
+        || d.starts_with("https://")
+        || d.starts_with("mailto:")
+        || d.starts_with('#')
 }
 
 /// `text` as HTML: markdown with tables; raw HTML shown as text; line breaks kept; links only to
@@ -39,10 +42,17 @@ mod tests {
     #[test_id(twmqa6h)]
     #[test]
     fn headings_lists_code_emphasis_and_links_render() {
-        let h = html("## Head\n\n- a\n  - b\n- c\n\nuse `x` and *em* and **strong** [s](https://e.com)\n\n```\nlet a = 1;\n```");
+        let h = html(
+            "## Head\n\n- a\n  - b\n- c\n\nuse `x` and *em* and **strong** [s](https://e.com)\n\n```\nlet a = 1;\n```",
+        );
         assert!(h.contains("<h2>Head</h2>"), "{h}");
         assert!(h.contains("<ul>\n<li>a\n<ul>\n<li>b</li>"), "{h}");
-        assert!(h.contains("<code>x</code>") && h.contains("<em>em</em>") && h.contains("<strong>strong</strong>"), "{h}");
+        assert!(
+            h.contains("<code>x</code>")
+                && h.contains("<em>em</em>")
+                && h.contains("<strong>strong</strong>"),
+            "{h}"
+        );
         assert!(h.contains(r#"<a href="https://e.com">s</a>"#), "{h}");
         assert!(h.contains("<pre><code>let a = 1;"), "{h}");
     }
@@ -51,7 +61,10 @@ mod tests {
     #[test]
     fn a_table_renders() {
         let h = html("| a | b |\n|---|---|\n| 1 | 2 |");
-        assert!(h.contains("<table>") && h.contains("<th>a</th>") && h.contains("<td>2</td>"), "{h}");
+        assert!(
+            h.contains("<table>") && h.contains("<th>a</th>") && h.contains("<td>2</td>"),
+            "{h}"
+        );
     }
 
     #[test_id(t5pow8s)]
@@ -64,9 +77,16 @@ mod tests {
     #[test_id(tw2pko0)]
     #[test]
     fn raw_html_becomes_text() {
-        for src in ["<script>alert(1)</script>", "a <img src=x onerror=alert(1)> b", "<b>x</b>"] {
+        for src in [
+            "<script>alert(1)</script>",
+            "a <img src=x onerror=alert(1)> b",
+            "<b>x</b>",
+        ] {
             let h = html(src);
-            assert!(!h.contains("<script") && !h.contains("<img") && !h.contains("<b>"), "{h}");
+            assert!(
+                !h.contains("<script") && !h.contains("<img") && !h.contains("<b>"),
+                "{h}"
+            );
             assert!(h.contains("&lt;"), "{h}");
         }
         assert_eq!(html("World<T>"), "<p>World&lt;T&gt;</p>");
@@ -75,7 +95,12 @@ mod tests {
     #[test_id(t3p2zvk)]
     #[test]
     fn only_safe_links_stay_links() {
-        for src in ["[x](javascript:alert(1))", "[x](JaVaScRiPt:alert(1))", "[x](data:text/html,a)", "[x](//e.com)"] {
+        for src in [
+            "[x](javascript:alert(1))",
+            "[x](JaVaScRiPt:alert(1))",
+            "[x](data:text/html,a)",
+            "[x](//e.com)",
+        ] {
             let h = html(src);
             assert!(!h.contains("<a") && !h.contains("href"), "{h}");
             assert!(h.contains('x'), "{h}");
