@@ -704,6 +704,8 @@ mod tests {
                     collection_id: "col",
                     version_id,
                     anchor: Anchor::lines(first, last),
+                    author: READER,
+                    visibility: Visibility::Now,
                     body: "hello",
                     now: 200,
                 },
@@ -713,7 +715,8 @@ mod tests {
         let collection = store::get(&conn, "col").unwrap().unwrap();
         let page = crate::page::render(
             &collection,
-            &all(&conn, "col").unwrap(),
+            &all(&conn, Scope::Reader, "col").unwrap(),
+            0,
             &Highlighter::new(),
         )
         .unwrap();
