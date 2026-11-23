@@ -3,6 +3,7 @@
 use askama::Template;
 
 use crate::highlight::Highlighter;
+use crate::refs::Refs;
 use crate::store::{Collection, Document};
 use crate::threads::{self, READER};
 use margin_core::anchor::Anchor;
@@ -16,7 +17,10 @@ pub struct MarkView {
 pub struct CommentView {
     pub id: String,
     pub author: String,
+    /// The comment as the author wrote it, which an edit starts from.
     pub body: String,
+    /// The comment rendered as markdown.
+    pub html: String,
     /// The reader may edit and delete it.
     pub mine: bool,
 }
@@ -32,7 +36,7 @@ pub struct ThreadView {
 }
 
 impl ThreadView {
-    pub fn new(t: &threads::Thread, open: bool) -> ThreadView {
+    pub fn new(t: &threads::Thread, open: bool, refs: &Refs) -> ThreadView {
         ThreadView {
             id: t.id.clone(),
             first: t.first_line,
@@ -50,6 +54,7 @@ impl ThreadView {
                     id: c.id.clone(),
                     author: c.author.clone(),
                     body: c.body.clone(),
+                    html: crate::markdown::html(&c.body, refs),
                     mine: c.author == READER,
                 })
                 .collect(),
@@ -78,6 +83,8 @@ pub struct LineView {
 }
 
 pub struct DocView {
+    /// The `N` of the section, `#doc-N`.
+    pub index: usize,
     pub path: String,
     pub version: i64,
     pub version_id: i64,
@@ -182,10 +189,12 @@ pub fn render(
     seq: i64,
     highlighter: &Highlighter,
 ) -> Result<String, askama::Error> {
+    let refs = Refs::new(c, highlighter);
     let docs = c
         .documents
         .iter()
-        .map(|d| {
+        .enumerate()
+        .map(|(n, d)| {
             let on: Vec<&threads::Thread> = all_threads
                 .iter()
                 .filter(|t| t.version_id == d.version_id)
@@ -197,7 +206,8 @@ pub fn render(
                 .collect();
             let changed = changed_in_latest(d);
             let lines: Vec<LineView> = highlighter
-                .lines_cached(&d.id, d.version_id, &d.path, d.kind, &d.text)
+                .parsed_cached(&d.id, d.version_id, &d.path, d.kind, &d.text)
+                .lines
                 .iter()
                 .enumerate()
                 .map(|(i, html)| {
@@ -219,12 +229,13 @@ pub fn render(
                         threads: on
                             .iter()
                             .filter(|t| t.last_line == n)
-                            .map(|t| ThreadView::new(t, false))
+                            .map(|t| ThreadView::new(t, false, &refs))
                             .collect(),
                     }
                 })
                 .collect();
             DocView {
+                index: n + 1,
                 path: d.path.clone(),
                 version: d.version,
                 version_id: d.version_id,
@@ -241,7 +252,7 @@ pub fn render(
         state: c.state.as_str(),
         can_publish: c.state != crate::store::State::Closed,
         seq,
-        cover_html: crate::markdown::html(&c.cover_note),
+        cover_html: crate::markdown::html(&c.cover_note, &refs),
         source: c.source.as_ref().map(SourceView::new),
         docs,
     }

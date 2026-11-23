@@ -13,6 +13,7 @@ pub mod home;
 pub mod markdown;
 pub mod metrics;
 pub mod page;
+pub mod refs;
 pub mod store;
 pub mod threads;
 pub mod versions;

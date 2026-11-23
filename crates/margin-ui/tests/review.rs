@@ -53,7 +53,7 @@ async fn a_review_is_opened_found_read_and_commented_on() {
 
     let body = serde_json::json!({
         "title": "One review",
-        "cover_note": "## Summary\n\n- a **bold** point\n",
+        "cover_note": "## Summary\n\n- a **bold** point\n- see `src/one.rs:2000`\n",
         "documents": [
             {"path": "src/one.rs", "kind": "code", "text": support::FIXTURE},
             {"path": "src/two.rs", "kind": "code", "text": "fn two() {}\n"},
@@ -92,6 +92,20 @@ async fn a_review_is_opened_found_read_and_commented_on() {
         eval::<u32>(&page, "document.querySelectorAll('.files a').length").await,
         2
     );
+
+    eval::<bool>(
+        &page,
+        "(document.querySelector('.cover a[href=\"#doc-1-2000\"]').click(), true)",
+    )
+    .await;
+    wait_for(
+        &page,
+        "the row of the cover's span below the bar",
+        "(() => { const bar = document.querySelector('nav.bar'); const row = document.querySelector('#doc-1-2000');
+           const top = row.getBoundingClientRect().top;
+           return !bar.hidden && top >= bar.getBoundingClientRect().bottom - 1 && top < window.innerHeight; })()",
+    )
+    .await;
 
     eval::<bool>(
         &page,

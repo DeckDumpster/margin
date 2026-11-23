@@ -670,7 +670,7 @@
         var area = document.createElement('textarea');
         area.name = 'body';
         area.rows = 3;
-        area.value = bodyEl.textContent;
+        area.value = bodyEl.getAttribute('data-source');
         var save = document.createElement('button');
         save.type = 'submit';
         save.textContent = 'Save';
