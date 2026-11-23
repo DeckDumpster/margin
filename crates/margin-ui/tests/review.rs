@@ -83,7 +83,7 @@ async fn a_review_is_opened_found_read_and_commented_on() {
     wait_for(
         &page,
         "the review page",
-        "document.querySelector('[data-line=\"3\"] .no')",
+        "document.readyState === 'complete' && document.querySelector('#doc-2')",
     )
     .await;
 
