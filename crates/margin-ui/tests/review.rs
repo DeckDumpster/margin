@@ -21,9 +21,17 @@ async fn eval<T: serde::de::DeserializeOwned>(page: &Page, js: &str) -> T {
         .unwrap_or_else(|e| panic!("reading the value of {js}: {e}"))
 }
 
+/// Poll `js` until it is truthy. A poll that lands while the page is navigating has no context
+/// to run in and counts as not yet.
 async fn wait_for(page: &Page, what: &str, js: &str) {
     let started = Instant::now();
-    while !eval::<bool>(page, &format!("Boolean({js})")).await {
+    let js = format!("Boolean({js})");
+    loop {
+        if let Ok(v) = page.evaluate(js.as_str()).await
+            && v.into_value::<bool>().unwrap_or(false)
+        {
+            return;
+        }
         assert!(
             started.elapsed() < SIGNAL_DEADLINE,
             "the page never signalled: {what} ({js})"
