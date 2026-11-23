@@ -210,13 +210,15 @@
     // Redraw every mark of one document from the server's answer.
     function drawMarks(lines, res) {
       var header = res.headers.get('x-margin-marks');
-      if (!header) return;
+      if (header) drawMarkList(lines, JSON.parse(header));
+    }
+
+    function drawMarkList(lines, list) {
       lines.querySelectorAll('.mark').forEach(function (m) {
         m.remove();
       });
       var rows = rowsOf(lines);
-      var marks = JSON.parse(header);
-      marks.forEach(function (m) {
+      list.forEach(function (m) {
         for (var n = m.first; n <= m.last; n++) {
           var mark = document.createElement('span');
           mark.className = 'mark';
@@ -226,7 +228,7 @@
           rows[n - 1].querySelector('.gut').appendChild(mark);
         }
       });
-      retint(lines, marks);
+      retint(lines, list);
     }
 
     // ---- highlights of words -------------------------------------------------------------
@@ -555,5 +557,83 @@
         });
       }
     });
+
+    // Publish: the held comments appear through the feed below, not through this answer.
+    var publish = document.getElementById('publish');
+    if (publish) {
+      publish.addEventListener('click', function () {
+        publish.disabled = true;
+        send('POST', url('/publish'))
+          .then(function (res) {
+            publish.textContent = res.ok ? 'Publish' : 'Not published: retry';
+          })
+          .catch(function () {
+            publish.textContent = 'Not published: retry';
+          })
+          .then(function () {
+            publish.disabled = false;
+          });
+      });
+    }
+
+    // Live changes: one long-poll that the server answers the moment something changes, then
+    // asked again at once. A failed call is retried after a growing pause.
+    var seq = Number(body.getAttribute('data-seq'));
+    var failures = 0;
+
+    function put(t) {
+      var tpl = document.createElement('template');
+      tpl.innerHTML = t.html.trim();
+      var fresh = tpl.content.firstElementChild;
+      var old = document.getElementById('thread-' + t.id);
+      if (old) {
+        if (old.querySelector('form.edit')) return; // an edit in progress is not clobbered
+        fresh.hidden = old.hidden;
+        var was = old.querySelector('form.reply textarea');
+        var now = fresh.querySelector('form.reply textarea');
+        var focused = was && document.activeElement === was;
+        if (was && now) now.value = was.value;
+        old.replaceWith(fresh);
+        if (focused && now) now.focus({ preventScroll: true });
+        return;
+      }
+      var lines = document.querySelector('.lines[data-version="' + t.version_id + '"]');
+      if (!lines) return;
+      var at = rowsOf(lines)[t.last_line - 1];
+      while (at.nextElementSibling && at.nextElementSibling.classList.contains('thread')) at = at.nextElementSibling;
+      at.after(fresh);
+    }
+
+    function apply(d) {
+      d.threads.forEach(put);
+      d.gone.forEach(function (id) {
+        var t = document.getElementById('thread-' + id);
+        if (t) t.remove();
+      });
+      d.marks.forEach(function (v) {
+        var lines = document.querySelector('.lines[data-version="' + v.version_id + '"]');
+        if (lines) drawMarkList(lines, v.marks);
+      });
+      if (publish) publish.hidden = d.state === 'closed';
+    }
+
+    function poll() {
+      fetch(url('/changes?after=' + seq + '&wait=25'))
+        .then(function (res) {
+          if (!res.ok) throw new Error('feed answered ' + res.status);
+          return res.json();
+        })
+        .then(function (d) {
+          apply(d);
+          seq = d.last_seq;
+          failures = 0;
+          poll();
+        })
+        .catch(function () {
+          failures++;
+          setTimeout(poll, Math.min(30000, 1000 * Math.pow(2, failures - 1)));
+        });
+    }
+    poll();
   }
 })();

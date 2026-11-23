@@ -9,7 +9,7 @@ CHROME_SHA256="7088865f510de22a83226817266274a1a4a57157d78ab429e6315701b19669f7"
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
-cargo test -p margin --features integration --test http
+cargo test -p margin --features integration --test http --test feed
 
 # The browser is the official Chrome for Testing build fetched by version and checked against a
 # pinned sha256, so the suite runs the same browser on any distribution. Only its shared

@@ -23,12 +23,17 @@ const CHANNEL_CAPACITY: usize = 1024;
 const FLUSH_EVERY: Duration = Duration::from_secs(15);
 const SEND_DEADLINE: Duration = Duration::from_secs(2);
 /// Upper bounds (seconds) of the latency histogram buckets.
-const BOUNDS: [f64; 9] = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 3.0];
+const BOUNDS: [f64; 11] = [
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 3.0, 10.0, 30.0,
+];
 
 pub const REQUESTS: &str = "margin_http_requests";
 pub const REQUEST_SECONDS: &str = "margin_http_request_seconds";
 pub const RENDER_SECONDS: &str = "margin_page_render_seconds";
 pub const QUEUE_FULL: &str = "margin_db_queue_full";
+pub const COMMENTS: &str = "margin_comments";
+pub const FEED_WAIT_SECONDS: &str = "margin_feed_wait_seconds";
+pub const FEED_LAG_SECONDS: &str = "margin_feed_lag_seconds";
 
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -41,6 +46,19 @@ pub enum Event {
         seconds: f64,
     },
     QueueFull,
+    /// A comment was written: by `reader` or an `agent`, `now` or `held`.
+    Comment {
+        author_kind: &'static str,
+        visibility: &'static str,
+    },
+    /// A feed call was answered after holding the request this long.
+    FeedWait {
+        seconds: f64,
+    },
+    /// A change reached a feed answer this long after it was made.
+    FeedLag {
+        seconds: f64,
+    },
 }
 
 #[derive(Clone)]
@@ -140,6 +158,9 @@ pub struct Aggregate {
     request_seconds: BTreeMap<String, Hist>,
     render_seconds: Hist,
     queue_full: u64,
+    comments: BTreeMap<(&'static str, &'static str), u64>,
+    feed_wait_seconds: Hist,
+    feed_lag_seconds: Hist,
 }
 
 fn attr(key: &str, value: String) -> KeyValue {
@@ -167,6 +188,12 @@ impl Aggregate {
             }
             Event::Render { seconds } => self.render_seconds.add(*seconds),
             Event::QueueFull => self.queue_full += 1,
+            Event::Comment {
+                author_kind,
+                visibility,
+            } => *self.comments.entry((author_kind, visibility)).or_default() += 1,
+            Event::FeedWait { seconds } => self.feed_wait_seconds.add(*seconds),
+            Event::FeedLag { seconds } => self.feed_lag_seconds.add(*seconds),
         }
     }
 
@@ -240,6 +267,40 @@ impl Aggregate {
                     is_monotonic: true,
                 }),
             ),
+            metric(
+                COMMENTS,
+                Data::Sum(Sum {
+                    data_points: self
+                        .comments
+                        .iter()
+                        .map(|((kind, visibility), n)| {
+                            sum_point(
+                                *n,
+                                vec![
+                                    attr("author_kind", kind.to_string()),
+                                    attr("visibility", visibility.to_string()),
+                                ],
+                            )
+                        })
+                        .collect(),
+                    aggregation_temporality: cumulative,
+                    is_monotonic: true,
+                }),
+            ),
+            metric(
+                FEED_WAIT_SECONDS,
+                Data::Histogram(Histogram {
+                    data_points: vec![hist_point(&self.feed_wait_seconds, vec![])],
+                    aggregation_temporality: cumulative,
+                }),
+            ),
+            metric(
+                FEED_LAG_SECONDS,
+                Data::Histogram(Histogram {
+                    data_points: vec![hist_point(&self.feed_lag_seconds, vec![])],
+                    aggregation_temporality: cumulative,
+                }),
+            ),
         ];
         ExportMetricsServiceRequest {
             resource_metrics: vec![ResourceMetrics {
@@ -276,7 +337,7 @@ mod tests {
 
     #[test_id(tqubqxq)]
     #[test]
-    fn export_carries_the_four_series_the_dashboard_graphs() {
+    fn export_carries_the_series_the_dashboard_graphs() {
         let mut agg = Aggregate::default();
         agg.add(&Event::Request {
             route: "/c/{id}".into(),
@@ -285,10 +346,24 @@ mod tests {
         });
         agg.add(&Event::Render { seconds: 0.03 });
         agg.add(&Event::QueueFull);
+        agg.add(&Event::Comment {
+            author_kind: "agent",
+            visibility: "held",
+        });
+        agg.add(&Event::FeedWait { seconds: 12.0 });
+        agg.add(&Event::FeedLag { seconds: 0.4 });
         let req = agg.to_request(1_700_000_000);
         assert_eq!(
             names(&req),
-            [REQUESTS, REQUEST_SECONDS, RENDER_SECONDS, QUEUE_FULL]
+            [
+                REQUESTS,
+                REQUEST_SECONDS,
+                RENDER_SECONDS,
+                QUEUE_FULL,
+                COMMENTS,
+                FEED_WAIT_SECONDS,
+                FEED_LAG_SECONDS
+            ]
         );
         let bytes = req.encode_to_vec();
         assert!(ExportMetricsServiceRequest::decode(&bytes[..]).is_ok());

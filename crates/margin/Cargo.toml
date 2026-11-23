@@ -21,6 +21,7 @@ prost = "0.13"
 ureq = { version = "3", default-features = false }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 margin-test-id = { path = "../margin-test-id" }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
@@ -32,4 +33,9 @@ integration = []
 [[test]]
 name = "http"
 path = "tests/http.rs"
+required-features = ["integration"]
+
+[[test]]
+name = "feed"
+path = "tests/feed.rs"
 required-features = ["integration"]
