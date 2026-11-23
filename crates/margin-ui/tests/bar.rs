@@ -267,7 +267,12 @@ async fn the_bar_is_hidden_at_the_top_shown_once_the_heading_scrolls_away_and_to
 async fn next_visits_every_file_names_each_then_is_disabled_and_previous_returns() {
     let rig = rig().await;
     let page = &rig.page;
-    scroll_to(page, 300).await;
+    // Just past the heading: the bar is up, and the first file is still below it.
+    eval::<bool>(
+        page,
+        "(window.scrollTo(0, document.querySelector('header.top').getBoundingClientRect().bottom + 1), true)",
+    )
+    .await;
     wait_for(page, "the bar showed", BAR_SHOWN).await;
     assert_eq!(bar_file(page).await, "", "no file before the first");
     assert!(
