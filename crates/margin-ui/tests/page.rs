@@ -35,7 +35,7 @@ struct Widths {
 }
 
 const MEASURE: &str = r#"(() => {
-  const W = window.innerWidth;
+  const W = 390;
   const over = (el) => el.getBoundingClientRect().right > W + 0.5;
   const label = (el) => el.tagName.toLowerCase() + '.' + el.className + ' right=' + el.getBoundingClientRect().right;
   const all = [...document.body.querySelectorAll('*')];
@@ -43,7 +43,7 @@ const MEASURE: &str = r#"(() => {
   let stored = null;
   try { stored = localStorage.getItem('margin.wrap'); } catch (e) {}
   return {
-    inner_width: W,
+    inner_width: window.innerWidth,
     page_scroll_width: document.documentElement.scrollWidth,
     outside_frame_overflow: all.filter((el) => !el.closest('.frame') && over(el)).map(label),
     any_overflow: all.filter(over).slice(0, 5).map(label),
@@ -171,10 +171,6 @@ async fn the_page_never_scrolls_sideways_on_a_phone_and_remembers_the_wrap_choic
 
     // Wrap on (the default).
     let on = widths(&page).await;
-    assert_eq!(
-        on.inner_width, PHONE,
-        "the phone viewport was not applied: {on:?}"
-    );
     assert_eq!(on.data_lines, 3000, "{on:?}");
     assert!(!on.nowrap_class, "{on:?}");
     assert!(
@@ -184,6 +180,10 @@ async fn the_page_never_scrolls_sideways_on_a_phone_and_remembers_the_wrap_choic
     assert!(
         on.any_overflow.is_empty(),
         "wrap on: elements past {PHONE}px: {on:?}"
+    );
+    assert_eq!(
+        on.inner_width, PHONE,
+        "the phone viewport was not applied: {on:?}"
     );
     screenshot(&page, "phone-390-wrap-on.png").await;
 
