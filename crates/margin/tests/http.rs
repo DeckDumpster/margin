@@ -1070,6 +1070,17 @@ async fn out_of_range_or_half_given_columns_answer_400() {
         let (status, body, _) = new_highlight(&h, &id, v, (1, 1), cols).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{cols:?}: {body}");
     }
+    // Across lines: a start past the first line's end, an end past the last line's end.
+    let (id2, v2) = rust_collection(&h, "ab\ncd\nef\n").await;
+    for cols in [(3, 1), (0, 3)] {
+        let (status, body, _) = new_highlight(&h, &id2, v2, (1, 3), cols).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{cols:?}: {body}");
+    }
+    assert_eq!(
+        new_highlight(&h, &id2, v2, (1, 3), (2, 0)).await.0,
+        StatusCode::CREATED,
+        "a start at a line's end and an end at column 0 are in range"
+    );
     let req = Request::builder()
         .method(Method::POST)
         .uri(format!("/c/{id}/threads"))
@@ -1081,4 +1092,31 @@ async fn out_of_range_or_half_given_columns_answer_400() {
         .unwrap();
     let resp = h.app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[test_id(tzzllo6)]
+#[tokio::test]
+async fn columns_after_a_tab_and_an_emoji_count_one_each() {
+    let h = harness();
+    // Columns: tab 0, emoji 1, space 2, then "word" 3..7.
+    let (id, v) = rust_collection(&h, "\t\u{1F642} word\n").await;
+    assert_eq!(
+        new_highlight(&h, &id, v, (1, 1), (3, 7)).await.0,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        new_highlight(&h, &id, v, (1, 1), (1, 2)).await.0,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        new_highlight(&h, &id, v, (1, 1), (0, 8)).await.0,
+        StatusCode::BAD_REQUEST,
+        "the line is 7 columns long, not its UTF-16 or byte length"
+    );
+    let (_, page) = send(&h.app, Method::GET, &format!("/c/{id}"), None, None).await;
+    let texts: Vec<String> = runs_of(&code_of(&page, 1))
+        .iter()
+        .map(|(_, t)| text_of(t))
+        .collect();
+    assert_eq!(texts, ["\u{1F642}", "word"]);
 }
