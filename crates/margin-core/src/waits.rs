@@ -29,7 +29,7 @@ pub fn waits_on(comments_in_order: &[(&str, Shown)], owner: &str) -> Waiter {
         .iter()
         .filter(|(_, s)| *s == Shown::Now)
         .map(|(a, _)| *a);
-    let Some(last) = visible.clone().last() else {
+    let Some(last) = visible.clone().next_back() else {
         return Waiter::Nobody;
     };
     if last != READER {
