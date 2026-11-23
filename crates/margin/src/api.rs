@@ -11,7 +11,6 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use margin_core::{Clock, Rng};
-use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use tower_http::timeout::TimeoutLayer;
 
@@ -20,7 +19,7 @@ use crate::db::{Db, DbError};
 use crate::highlight::Highlighter;
 use crate::metrics::{Event, Metrics};
 use crate::store::{self, NewCollection, NewDocument, Patch};
-use crate::threads::{self, Change, CreateError, Mark, NewThread, Thread};
+use crate::threads::{self, Change, CreateError, Deleted, Mark, NewThread, Thread};
 use askama::Template;
 use margin_core::anchor::Anchor;
 
@@ -514,37 +513,14 @@ async fn delete_comment(
     State(s): State<AppState>,
     Path((id, cid)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
-    let changed = s
-        .run(move |conn| {
-            let version: Option<i64> = conn
-                .query_row(
-                    "SELECT a.version_id FROM comments c
-                     JOIN threads t ON t.id = c.thread_id
-                     JOIN anchors a ON a.id = t.anchor_id
-                     WHERE c.id = ?1 AND t.collection_id = ?2",
-                    rusqlite::params![cid, id],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            Ok(match threads::delete_comment(conn, &id, &cid)? {
-                Change::Done(None) => {
-                    let marks = match version {
-                        Some(v) => threads::version_marks(conn, &id, v)?,
-                        None => Vec::new(),
-                    };
-                    Change::Done((None, marks))
-                }
-                Change::Done(Some(t)) => Change::Done((Some(t), Vec::new())),
-                Change::NotFound => Change::NotFound,
-                Change::NotYours => Change::NotYours,
-            })
-        })
-        .await?;
-    match changed {
+    match s
+        .run(move |conn| threads::delete_comment(conn, &id, &cid))
+        .await?
+    {
         Change::NotFound => Err(ApiError::NotFound),
         Change::NotYours => Err(ApiError::Forbidden),
-        Change::Done((Some(thread), _)) => fragment(&thread, None, StatusCode::OK),
-        Change::Done((None, marks)) => Ok(with_marks(
+        Change::Done(Deleted::Left(thread)) => fragment(&thread, None, StatusCode::OK),
+        Change::Done(Deleted::Gone(marks)) => Ok(with_marks(
             StatusCode::NO_CONTENT.into_response(),
             Some(&marks),
         )),

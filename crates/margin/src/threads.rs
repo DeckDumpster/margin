@@ -244,9 +244,14 @@ pub fn version_marks(
     collection_id: &str,
     version_id: i64,
 ) -> rusqlite::Result<Vec<Mark>> {
-    let all = all(conn, collection_id)?;
-    let on: Vec<&Thread> = all.iter().filter(|t| t.version_id == version_id).collect();
-    Ok(marks(&on))
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {THREAD_COLUMNS} FROM threads t JOIN anchors a ON a.id = t.anchor_id
+         WHERE t.collection_id = ?1 AND a.version_id = ?2 ORDER BY t.created_at, t.id"
+    ))?;
+    let on = stmt
+        .query_map(params![collection_id, version_id], thread_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(marks(&on.iter().collect::<Vec<_>>()))
 }
 
 /// Add a comment to a thread of this collection; `None` when there is no such thread.
@@ -314,13 +319,19 @@ pub fn edit_comment(
     ))
 }
 
-/// Delete the reader's comment. A thread left with no comments goes with its anchor, and
-/// `Done(None)` says so.
+pub enum Deleted {
+    /// Comments remain: the thread as it is now.
+    Left(Thread),
+    /// The thread had no other comment and went with its anchor: the version's marks now.
+    Gone(Vec<Mark>),
+}
+
+/// Delete the reader's comment. A thread left with no comments goes with its anchor.
 pub fn delete_comment(
     conn: &mut Connection,
     collection_id: &str,
     comment_id: &str,
-) -> rusqlite::Result<Change<Option<Thread>>> {
+) -> rusqlite::Result<Change<Deleted>> {
     let Some((thread_id, author)) = owner(conn, collection_id, comment_id)? else {
         return Ok(Change::NotFound);
     };
@@ -334,17 +345,20 @@ pub fn delete_comment(
         [&thread_id],
         |r| r.get(0),
     )?;
-    if left == 0 {
-        let anchor_id: i64 = tx.query_row(
-            "SELECT anchor_id FROM threads WHERE id = ?1",
-            [&thread_id],
-            |r| r.get(0),
-        )?;
-        tx.execute("DELETE FROM threads WHERE id = ?1", [&thread_id])?;
-        tx.execute("DELETE FROM anchors WHERE id = ?1", [anchor_id])?;
+    if left > 0 {
+        let thread = get(&tx, collection_id, &thread_id)?.expect("the thread still has comments");
         tx.commit()?;
-        return Ok(Change::Done(None));
+        return Ok(Change::Done(Deleted::Left(thread)));
     }
+    let (anchor_id, version_id): (i64, i64) = tx.query_row(
+        "SELECT t.anchor_id, a.version_id FROM threads t JOIN anchors a ON a.id = t.anchor_id
+         WHERE t.id = ?1",
+        [&thread_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    tx.execute("DELETE FROM threads WHERE id = ?1", [&thread_id])?;
+    tx.execute("DELETE FROM anchors WHERE id = ?1", [anchor_id])?;
+    let marks = version_marks(&tx, collection_id, version_id)?;
     tx.commit()?;
-    Ok(Change::Done(get(conn, collection_id, &thread_id)?))
+    Ok(Change::Done(Deleted::Gone(marks)))
 }
