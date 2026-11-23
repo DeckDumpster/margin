@@ -227,11 +227,12 @@
       if (e.target.closest && e.target.closest('.no')) e.preventDefault();
     });
 
-    function send(method, url, payload) {
+    function send(method, url, payload, signal) {
       return fetch(url, {
         method: method,
         headers: { 'content-type': 'application/json' },
         body: payload === undefined ? undefined : JSON.stringify(payload),
+        signal: signal,
       });
     }
 
@@ -476,16 +477,24 @@
       openBox(p.lines, p.first, p.last, p.cols);
     });
 
-    function fail(form, res) {
+    function fail(form, message) {
       var err = form.querySelector('.err');
       if (!err) {
         err = document.createElement('div');
         err.className = 'err';
         form.prepend(err);
       }
-      res.text().then(function (t) {
-        err.textContent = 'Not saved: ' + t;
-      });
+      err.textContent = 'Not saved: ' + message;
+    }
+
+    // A form with a request in flight cannot send another; any failure puts it back.
+    function setBusy(form, on) {
+      var area = form.elements.body;
+      var submit = form.querySelector('button[type=submit]');
+      if (on) form.setAttribute('data-busy', '');
+      else form.removeAttribute('data-busy');
+      if (submit) submit.disabled = on;
+      if (area) area.readOnly = on;
     }
 
     function url(path) {
@@ -494,13 +503,14 @@
 
     document.addEventListener('submit', function (e) {
       var form = e.target;
-      var text = form.elements.body ? form.elements.body.value : '';
       if (!form.classList.contains('newbox') && !form.classList.contains('reply') && !form.classList.contains('edit')) return;
       e.preventDefault();
+      if (form.hasAttribute('data-busy')) return;
+      var text = form.elements.body ? form.elements.body.value : '';
       if (!text.trim()) return;
       var thread = form.closest('.thread');
-      var lines = (thread || form).closest('.lines');
       var req;
+      var signal = AbortSignal.timeout(5000);
       if (form.classList.contains('newbox')) {
         var anchor = {
           version_id: Number(form.getAttribute('data-version')),
@@ -512,24 +522,45 @@
           anchor.start_col = Number(form.getAttribute('data-start-col'));
           anchor.end_col = Number(form.getAttribute('data-end-col'));
         }
-        req = send('POST', url('/threads'), anchor);
+        req = send('POST', url('/threads'), anchor, signal);
       } else if (form.classList.contains('reply')) {
-        req = send('POST', url('/threads/' + thread.getAttribute('data-thread') + '/comments'), { body: text });
+        req = send('POST', url('/threads/' + thread.getAttribute('data-thread') + '/comments'), { body: text }, signal);
       } else {
         var cid = form.closest('.cm').getAttribute('data-comment');
-        req = send('PATCH', url('/comments/' + cid), { body: text });
+        req = send('PATCH', url('/comments/' + cid), { body: text }, signal);
       }
-      req.then(function (res) {
-        if (!res.ok) return fail(form, res);
-        res.text().then(function (html) {
-          if (form.classList.contains('newbox')) {
-            drawMarks(lines, res);
-            swap(form, html);
-          } else {
-            swap(thread, html);
+      var stale = form.querySelector('.err');
+      if (stale) stale.remove();
+      setBusy(form, true);
+      req
+        .then(function (res) {
+          return res.text().then(function (t) {
+            return { res: res, text: t };
+          });
+        })
+        .then(function (got) {
+          var res = got.res;
+          if (!document.contains(form)) {
+            // Cancelled or replaced by the feed meanwhile: the feed brings the saved comment.
+            return;
           }
+          if (!res.ok) {
+            setBusy(form, false);
+            return fail(form, got.text);
+          }
+          if (form.classList.contains('newbox')) {
+            drawMarks(form.closest('.lines'), res);
+            swap(form, got.text);
+          } else {
+            // The feed may have replaced the thread while the request was out.
+            swap(form.closest('.thread'), got.text);
+          }
+        })
+        .catch(function () {
+          // No answer, or the answer could not be read or applied: the form is usable again.
+          setBusy(form, false);
+          if (document.contains(form)) fail(form, 'no answer from the server');
         });
-      });
     });
 
     document.addEventListener('click', function (e) {
@@ -630,12 +661,11 @@
     // the caller can put the focus back.
     function transfer(old, fresh, moved) {
       fresh.hidden = old.hidden;
-      var was = old.querySelector('form.reply textarea');
-      var now = fresh.querySelector('form.reply textarea');
-      if (was && now) {
-        now.value = was.value;
-        moved.set(was, now);
-      }
+      // The reader's own reply form moves into the fresh thread, with its text, error, in-flight
+      // state and response handler.
+      var was = old.querySelector('form.reply');
+      var now = fresh.querySelector('form.reply');
+      if (was && now) now.replaceWith(was);
       var edit = old.querySelector('form.edit');
       var cm = edit && edit.closest('.cm');
       var body = cm && fresh.querySelector('.cm[data-comment="' + cm.getAttribute('data-comment') + '"] .body');
