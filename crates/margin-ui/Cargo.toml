@@ -1,0 +1,12 @@
+[package]
+name = "margin-ui"
+version = "0.1.0"
+edition.workspace = true
+
+[dev-dependencies]
+margin = { path = "../margin" }
+chromiumoxide = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
+futures = "0.3"
+tempfile = "3"
+serde_json = "1"

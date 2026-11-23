@@ -1,0 +1,9 @@
+[package]
+name = "margin-core"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+margin-test-id = { path = "../margin-test-id" }
