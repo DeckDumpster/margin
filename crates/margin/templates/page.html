@@ -8,6 +8,12 @@
 <link rel="stylesheet" href="/static/margin.css">
 </head>
 <body data-collection="{{ id }}" data-seq="{{ seq }}">
+<nav class="bar" aria-label="Review" hidden>
+<button type="button" id="bar-top" aria-label="Top">Top</button>
+<span class="bar-text"><span class="bar-title">{{ title }}</span><span class="bar-file" id="bar-file"></span></span>
+<button type="button" id="bar-prev" aria-label="Previous file" disabled>&#8249;</button>
+<button type="button" id="bar-next" aria-label="Next file" disabled>&#8250;</button>
+</nav>
 <header class="top">
 <h1 class="title">{{ title }}</h1>
 <button type="button" id="wrap-toggle" aria-pressed="true">Wrap: on</button>
