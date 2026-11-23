@@ -2,6 +2,7 @@
 //! every consumer can be driven by a simulation.
 
 pub mod anchor;
+pub mod highlight;
 pub mod lines;
 
 use std::time::{SystemTime, UNIX_EPOCH};

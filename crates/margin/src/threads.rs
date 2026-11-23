@@ -48,6 +48,11 @@ pub struct Mark {
     pub first: u32,
     pub last: u32,
     pub lane: u16,
+    /// The highlighted columns when the thread is a highlight (see [`Anchor::cols`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_col: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_col: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -234,6 +239,8 @@ pub fn marks(threads: &[&Thread]) -> Vec<Mark> {
             first: t.first_line,
             last: t.last_line,
             lane,
+            start_col: t.start_col,
+            end_col: t.end_col,
         })
         .collect();
     // Thread reads order by second and random id; the DOM and the header order by lane.
