@@ -6,12 +6,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chromiumoxide::browser::{Browser, BrowserConfig};
+use chromiumoxide::browser::Browser;
 use chromiumoxide::cdp::browser_protocol::emulation::{
     SetDeviceMetricsOverrideParams, SetTouchEmulationEnabledParams,
 };
 use chromiumoxide::page::{Page, ScreenshotParams};
-use futures::StreamExt;
 use margin::agents::OsRng;
 use margin::api::{AppState, router};
 use margin::config::Config;
@@ -21,6 +20,8 @@ use margin::metrics::Metrics;
 use margin::store::{Kind, NewCollection, NewDocument};
 use margin_core::SystemClock;
 use margin_test_id::test_id;
+
+mod support;
 
 const FIXTURE: &str = include_str!("../fixtures/long.rs");
 const PHONE: u32 = 390;
@@ -85,22 +86,8 @@ async fn serve() -> (String, tempfile::TempDir) {
 }
 
 async fn rig() -> Rig {
-    let chromium = std::env::var("MARGIN_CHROMIUM").expect(
-        "MARGIN_CHROMIUM must name a chromium binary; this suite refuses to run without it",
-    );
     let (url, dir) = serve().await;
-    let config = BrowserConfig::builder()
-        .chrome_executable(chromium)
-        .no_sandbox()
-        .args([
-            "--disable-gpu",
-            "--disable-dev-shm-usage",
-            "--hide-scrollbars",
-        ])
-        .build()
-        .unwrap();
-    let (browser, mut handler) = Browser::launch(config).await.unwrap();
-    let pump = tokio::spawn(async move { while handler.next().await.is_some() {} });
+    let (browser, pump) = support::launch(dir.path()).await;
     let page = browser.new_page("about:blank").await.unwrap();
     viewport(&page, PHONE, HEIGHT, true).await;
     page.execute(SetTouchEmulationEnabledParams::new(true))
