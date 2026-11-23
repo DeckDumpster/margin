@@ -87,6 +87,7 @@ async fn rig() -> Rig {
     tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
     let config = BrowserConfig::builder()
         .chrome_executable(chromium)
+        .user_data_dir(dir.path().join("chromium-profile"))
         .no_sandbox()
         .args([
             "--disable-gpu",
