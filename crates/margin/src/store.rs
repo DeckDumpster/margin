@@ -136,6 +136,8 @@ impl Source {
 #[derive(Debug, Clone, Serialize)]
 pub struct Collection {
     pub id: String,
+    /// The short number the review is opened by, `/c/{number}`.
+    pub number: i64,
     pub title: String,
     pub cover_note: String,
     pub state: State,
@@ -149,6 +151,7 @@ pub struct Collection {
 #[derive(Debug, Clone, Serialize)]
 pub struct Summary {
     pub id: String,
+    pub number: i64,
     pub title: String,
     pub state: State,
     pub created_by: String,
@@ -174,7 +177,8 @@ pub struct NewCollection<'a> {
     pub documents: &'a [(String, NewDocument)],
 }
 
-pub fn create(conn: &mut Connection, c: &NewCollection) -> rusqlite::Result<()> {
+/// Insert the collection and return its number.
+pub fn create(conn: &mut Connection, c: &NewCollection) -> rusqlite::Result<i64> {
     let tx = conn.transaction()?;
     tx.execute(
         "INSERT INTO collections (id, title, cover_note, state, created_by, created_at, updated_at, source_repository, source_commit)
@@ -189,6 +193,11 @@ pub fn create(conn: &mut Connection, c: &NewCollection) -> rusqlite::Result<()> 
             c.source.map(|s| &s.commit)
         ],
     )?;
+    tx.execute(
+        "INSERT INTO collection_numbers (collection_id) VALUES (?1)",
+        [c.id],
+    )?;
+    let number = tx.last_insert_rowid();
     for (position, (doc_id, d)) in c.documents.iter().enumerate() {
         tx.execute(
             "INSERT INTO documents (id, collection_id, position, path, kind) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -199,14 +208,38 @@ pub fn create(conn: &mut Connection, c: &NewCollection) -> rusqlite::Result<()> 
             params![doc_id, d.text, c.now],
         )?;
     }
-    tx.commit()
+    tx.commit()?;
+    Ok(number)
+}
+
+/// The opaque id a URL key names: an exact id first, else an all-digit key as a number.
+pub fn resolve(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
+    let exact = conn
+        .query_row("SELECT id FROM collections WHERE id = ?1", [key], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    if exact.is_some() || key.is_empty() || !key.bytes().all(|b| b.is_ascii_digit()) {
+        return Ok(exact);
+    }
+    let Ok(number) = key.parse::<i64>() else {
+        return Ok(None);
+    };
+    conn.query_row(
+        "SELECT collection_id FROM collection_numbers WHERE number = ?1",
+        [number],
+        |r| r.get(0),
+    )
+    .optional()
 }
 
 pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<Collection>> {
     let head = conn
         .query_row(
-            "SELECT id, title, cover_note, state, created_by, created_at, updated_at, source_repository, source_commit
-             FROM collections WHERE id = ?1",
+            "SELECT c.id, c.title, c.cover_note, c.state, c.created_by, c.created_at, c.updated_at,
+                    c.source_repository, c.source_commit, n.number
+             FROM collections c JOIN collection_numbers n ON n.collection_id = c.id
+             WHERE c.id = ?1",
             [id],
             |r| {
                 Ok(Collection {
@@ -221,6 +254,7 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<Collection>> 
                         (Some(repository), Some(commit)) => Some(Source { repository, commit }),
                         _ => None,
                     },
+                    number: r.get(9)?,
                     documents: Vec::new(),
                 })
             },
@@ -261,9 +295,10 @@ pub fn list(
 ) -> rusqlite::Result<Vec<Summary>> {
     let (after_at, after_id) = after.unwrap_or((i64::MAX, "\u{10FFFF}"));
     let mut stmt = conn.prepare(
-        "SELECT id, title, state, created_by, created_at FROM collections
-         WHERE (created_at, id) < (?1, ?2)
-         ORDER BY created_at DESC, id DESC
+        "SELECT c.id, c.title, c.state, c.created_by, c.created_at, n.number
+         FROM collections c JOIN collection_numbers n ON n.collection_id = c.id
+         WHERE (c.created_at, c.id) < (?1, ?2)
+         ORDER BY c.created_at DESC, c.id DESC
          LIMIT ?3",
     )?;
     stmt.query_map(params![after_at, after_id, limit as i64], |r| {
@@ -273,6 +308,7 @@ pub fn list(
             state: State::parse(&r.get::<_, String>(2)?)?,
             created_by: r.get(3)?,
             created_at: r.get(4)?,
+            number: r.get(5)?,
         })
     })?
     .collect()

@@ -11,8 +11,8 @@
 <p class="meta">What is open, and what waits on whom.</p>
 {% if entries.is_empty() %}<p class="empty">Nothing is open.</p>{% endif %}
 <ul class="collections">
-{% for e in entries %}<li><a class="entry" href="/c/{{ e.id }}">
-<span class="etitle">{{ e.title }}</span>{% if e.published %} <span class="badge">published</span>{% endif %}
+{% for e in entries %}<li><a class="entry" href="/c/{{ e.number }}">
+<span class="etitle">#{{ e.number }} {{ e.title }}</span>{% if e.published %} <span class="badge">published</span>{% endif %}
 {% if !e.first_line.is_empty() %}<span class="note">{{ e.first_line }}</span>{% endif %}
 <span class="waits">{% if e.waits.is_empty() %}nothing waiting{% else %}{{ e.waits }}{% endif %}</span>
 </a></li>

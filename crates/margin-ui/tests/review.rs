@@ -59,16 +59,16 @@ async fn a_review_is_opened_found_read_and_commented_on() {
             {"path": "src/two.rs", "kind": "code", "text": "fn two() {}\n"},
         ],
     });
-    let id: String = eval(
+    let number: i64 = eval(
         &page,
         &format!(
-            "fetch('/api/collections', {{method: 'POST', headers: {{authorization: 'Bearer {TOKEN}', 'content-type': 'application/json'}}, body: JSON.stringify({body})}}).then(r => r.json()).then(j => j.id)"
+            "fetch('/api/collections', {{method: 'POST', headers: {{authorization: 'Bearer {TOKEN}', 'content-type': 'application/json'}}, body: JSON.stringify({body})}}).then(r => r.json()).then(j => j.number)"
         ),
     )
     .await;
 
     page.goto(&home).await.unwrap();
-    let link = format!("a.entry[href=\"/c/{id}\"]");
+    let link = format!("a.entry[href=\"/c/{number}\"]");
     wait_for(
         &page,
         "the review on the home page",
@@ -126,7 +126,7 @@ async fn a_review_is_opened_found_read_and_commented_on() {
     wait_for(&page, "the new thread", "!document.querySelector('.newbox') && document.querySelector('.thread')?.textContent.includes('why this way?')").await;
     let kept: u32 = eval(
         &page,
-        &format!("fetch('/c/{id}').then(r => r.text()).then(t => new DOMParser().parseFromString(t, 'text/html').querySelectorAll('.thread').length)"),
+        &format!("fetch('/c/{number}').then(r => r.text()).then(t => new DOMParser().parseFromString(t, 'text/html').querySelectorAll('.thread').length)"),
     )
     .await;
     assert_eq!(kept, 1);

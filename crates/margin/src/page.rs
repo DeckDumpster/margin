@@ -110,6 +110,7 @@ impl DocView {
 #[template(path = "page.html")]
 pub struct Page {
     pub id: String,
+    pub number: i64,
     pub title: String,
     pub state: &'static str,
     pub can_publish: bool,
@@ -235,6 +236,7 @@ pub fn render(
         .collect();
     Page {
         id: c.id.clone(),
+        number: c.number,
         title: c.title.clone(),
         state: c.state.as_str(),
         can_publish: c.state != crate::store::State::Closed,

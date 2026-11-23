@@ -246,6 +246,7 @@ struct CreateBody {
 #[derive(Serialize)]
 struct Created {
     id: String,
+    number: i64,
     url: String,
 }
 
@@ -292,23 +293,24 @@ async fn create(
         .collect();
     let now = s.clock.now_unix();
     let (id2, title, cover) = (id.clone(), body.title, body.cover_note);
-    s.run(move |conn| {
-        store::create(
-            conn,
-            &NewCollection {
-                id: &id2,
-                title: &title,
-                cover_note: &cover,
-                created_by: &agent,
-                now,
-                source: source.as_ref(),
-                documents: &documents,
-            },
-        )
-    })
-    .await?;
-    let url = format!("{}/c/{}", s.config.base_url, id);
-    Ok((StatusCode::CREATED, Json(Created { id, url })))
+    let number = s
+        .run(move |conn| {
+            store::create(
+                conn,
+                &NewCollection {
+                    id: &id2,
+                    title: &title,
+                    cover_note: &cover,
+                    created_by: &agent,
+                    now,
+                    source: source.as_ref(),
+                    documents: &documents,
+                },
+            )
+        })
+        .await?;
+    let url = format!("{}/c/{}", s.config.base_url, number);
+    Ok((StatusCode::CREATED, Json(Created { id, number, url })))
 }
 
 async fn read(
@@ -412,13 +414,16 @@ async fn remove(
 
 async fn reader(
     State(s): State<AppState>,
-    Path(id): Path<String>,
+    Path(key): Path<String>,
 ) -> Result<Html<String>, ApiError> {
     // The sequence number is read before the threads, so a change that lands in between is
     // delivered again by the feed rather than missed.
     let (seq, collection, all_threads) = s
         .run(move |conn| {
             let seq = changes::newest(conn)?;
+            let Some(id) = store::resolve(conn, &key)? else {
+                return Ok(None);
+            };
             Ok(match store::get(conn, &id)? {
                 Some(c) => Some((seq, threads::all(conn, Scope::Reader, &id)?, c)),
                 None => None,
