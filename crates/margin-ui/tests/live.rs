@@ -703,3 +703,78 @@ async fn a_page_fetch_that_fails_once_keeps_the_draft_and_the_version_then_appea
     );
     rig.close().await;
 }
+
+const ROW: &str = "document.querySelector('.files a[href=\"#doc-2\"] .fsum').textContent";
+
+#[test_id(fl1ck2r)]
+#[tokio::test]
+#[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
+async fn the_files_list_jumps_to_a_section_and_follows_comments_versions_and_a_new_cover() {
+    let rig = rig().await;
+    let page = &rig.page;
+    assert_eq!(eval::<String>(page, ROW).await, "60 lines · no comments");
+    assert!(
+        eval::<bool>(
+            page,
+            "document.querySelector('.meta').nextElementSibling.matches('nav.files')"
+        )
+        .await
+    );
+
+    eval::<bool>(
+        page,
+        "document.querySelector('.files a[href=\"#doc-2\"]').click(); true",
+    )
+    .await;
+    wait_for(
+        page,
+        "section 2 on screen",
+        "(() => { const t = document.getElementById('doc-2').getBoundingClientRect().top; return t >= -1 && t < window.innerHeight; })()",
+    )
+    .await;
+
+    rig.agent_thread(5, "counted", false).await;
+    wait_for(
+        page,
+        "the count",
+        &format!("{ROW} === '60 lines · no comments'"),
+    )
+    .await;
+    rig.agent(
+        "POST",
+        "/api/collections/live/threads",
+        json!({"path": "b.rs", "first_line": 5, "last_line": 5, "body": "on b", "held": false}),
+    )
+    .await;
+    wait_for(
+        page,
+        "the count",
+        &format!("{ROW} === '60 lines · 1 comment'"),
+    )
+    .await;
+
+    rig.post_version("d2", &revised(|l| l.push("// more".into())), 2, 2)
+        .await;
+    wait_for(
+        page,
+        "the line count",
+        &format!("{ROW} === '61 lines · 1 comment'"),
+    )
+    .await;
+
+    let (status, got) = rig
+        .agent(
+            "PATCH",
+            "/api/collections/live",
+            json!({"cover_note": "read this first"}),
+        )
+        .await;
+    assert_eq!(status, 200, "{got}");
+    wait_for(
+        page,
+        "the cover after the list",
+        "document.querySelector('.cover') && document.querySelector('.files').nextElementSibling === document.querySelector('.cover')",
+    )
+    .await;
+    rig.close().await;
+}

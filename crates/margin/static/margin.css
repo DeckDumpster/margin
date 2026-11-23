@@ -59,6 +59,11 @@ body {
   border-radius: 0.4rem;
 }
 .meta { color: var(--dim); margin: 0.25rem 0 0.75rem; }
+.files { display: flex; flex-direction: column; margin: 0 0 1rem; border: 1px solid var(--rule); border-radius: 0.4rem; }
+.files a { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.1rem 0.75rem; min-height: 2.75rem; box-sizing: border-box; padding: 0.4rem 0.75rem; color: var(--accent); text-decoration: none; }
+.files a + a { border-top: 1px solid var(--rule); }
+.files .fpath { font: 600 0.9rem/1.3 ui-monospace, monospace; overflow-wrap: anywhere; min-width: 0; }
+.files .fsum { color: var(--dim); font-size: 0.85rem; }
 .cover { white-space: pre-wrap; margin: 0 0 1rem; padding: 0.5rem 0.75rem; border-left: 3px solid var(--rule); }
 .doc { margin: 0 0 1.5rem; min-width: 0; }
 .path { font: 600 0.95rem/1.3 ui-monospace, monospace; margin: 0 0 0.35rem; }
