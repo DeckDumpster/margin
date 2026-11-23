@@ -4,6 +4,7 @@
   --fg: #1f2328;
   --dim: #6e7781;
   --rule: #d0d7de;
+  --accent: #0969da;
   --c-comment: #6e7781;
   --c-keyword: #cf222e;
   --c-string: #0a3069;
@@ -17,6 +18,7 @@
     --fg: #e6edf3;
     --dim: #8b949e;
     --rule: #30363d;
+    --accent: #58a6ff;
     --c-comment: #8b949e;
     --c-keyword: #ff7b72;
     --c-string: #a5d6ff;
@@ -55,7 +57,8 @@ body {
 /* A document frame: the only thing that may scroll sideways. */
 .frame { overflow-x: auto; max-width: 100%; border: 1px solid var(--rule); border-radius: 0.4rem; }
 .lines { font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 4; padding: 0.25rem 0; }
-.ln { display: grid; grid-template-columns: calc(var(--nw) * 1ch + 1.5ch) minmax(0, 1fr); }
+.ln { display: grid; grid-template-columns: calc(var(--nw) * 1ch + 1.5ch) var(--gut) minmax(0, 1fr); }
+.lines { --gut: 22px; }
 .no {
   position: sticky;
   left: 0;
@@ -65,7 +68,39 @@ body {
   background: var(--bg);
   user-select: none;
   -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  cursor: pointer;
 }
+.ln.sel .no, .ln.sel .gut, .ln.sel .code { background: color-mix(in srgb, var(--accent) 22%, var(--bg)); }
+body[data-gesture] { -webkit-user-select: none; user-select: none; }
+
+/* The margin: a fixed-width gutter, one 4px bar per thread at its lane (lanes past 3 share the last). */
+.gut {
+  position: sticky;
+  left: calc(var(--nw) * 1ch + 1.5ch);
+  background: var(--bg);
+}
+.mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(min(var(--lane), 3) * 5px + 1px);
+  width: 4px;
+  background: var(--accent);
+  opacity: 0.85;
+  cursor: pointer;
+}
+.mark::after { content: ""; position: absolute; top: 0; bottom: 0; left: -1px; right: -1px; }
+
+/* Threads and the new-comment box open in place under a line. */
+.thread, .newbox { margin: 0.25rem 0 0.5rem; padding: 0.5rem 0.6rem; border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: 0.4rem; background: var(--bg); font: 15px/1.4 system-ui, sans-serif; white-space: normal; position: sticky; left: 0; max-width: 100%; }
+.thread[hidden] { display: none; }
+.cm { margin: 0 0 0.5rem; }
+.cm .who { font-weight: 600; color: var(--dim); font-size: 0.85rem; }
+.cm .body { white-space: pre-wrap; }
+.acts { display: flex; gap: 0.5rem; }
+.thread textarea, .newbox textarea { display: block; width: 100%; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--rule); border-radius: 0.3rem; padding: 0.4rem; }
+.thread button, .newbox button { min-height: 2.75rem; padding: 0 0.9rem; font: inherit; color: inherit; background: transparent; border: 1px solid var(--rule); border-radius: 0.4rem; margin: 0.35rem 0.5rem 0 0; }
 .code { white-space: pre; padding-left: 1ch; min-height: 1.45em; }
 
 /* wrap on (the default): hanging indent, no sideways scroll at all */
