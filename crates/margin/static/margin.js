@@ -553,6 +553,7 @@
             // The feed may have replaced the thread while the request was out.
             swap(form.closest('.thread'), got.text);
           }
+          recount();
         })
         .catch(function () {
           // No answer, or the answer could not be read or applied: the form is usable again.
@@ -622,9 +623,11 @@
           if (res.status === 204) {
             drawMarks(lines, res);
             thread.remove();
+            recount();
           } else {
             res.text().then(function (html) {
               swap(thread, html);
+              recount();
             });
           }
         });

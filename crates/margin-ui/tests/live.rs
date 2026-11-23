@@ -739,10 +739,11 @@ async fn the_files_list_jumps_to_a_section_and_follows_comments_versions_and_a_n
     rig.agent_thread(5, "counted", false).await;
     wait_for(
         page,
-        "the count",
-        &format!("{ROW} === '60 lines · no comments'"),
+        "row 1's count",
+        "document.querySelector('.files a[href=\"#doc-1\"] .fsum').textContent === '60 lines · 1 comment'",
     )
     .await;
+    assert_eq!(eval::<String>(page, ROW).await, "60 lines · no comments");
     rig.agent(
         "POST",
         "/api/collections/live/threads",
@@ -764,6 +765,7 @@ async fn the_files_list_jumps_to_a_section_and_follows_comments_versions_and_a_n
         &format!("{ROW} === '61 lines · 1 comment'"),
     )
     .await;
+    assert!(eval::<bool>(page, "!!document.getElementById('doc-2')").await);
 
     let (status, got) = rig
         .agent(
