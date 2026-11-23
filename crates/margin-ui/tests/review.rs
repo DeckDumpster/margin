@@ -37,7 +37,8 @@ async fn wait_for(page: &Page, what: &str, js: &str) {
 #[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
 async fn a_review_is_opened_found_read_and_commented_on() {
     let agents = format!("ada = \"{}\"\n", hash_token(TOKEN));
-    let (fixture, dir) = support::serve_docs("Fixture", &[("a.rs", "fn a() {}\n".into())], &agents).await;
+    let (fixture, dir) =
+        support::serve_docs("Fixture", &[("a.rs", "fn a() {}\n".into())], &agents).await;
     let home = fixture.trim_end_matches("c/fixture").to_string();
     let (mut browser, pump) = support::launch(dir.path()).await;
     let page = browser.new_page(&home).await.unwrap();
@@ -60,14 +61,35 @@ async fn a_review_is_opened_found_read_and_commented_on() {
 
     page.goto(&home).await.unwrap();
     let link = format!("a.entry[href=\"/c/{id}\"]");
-    wait_for(&page, "the review on the home page", &format!("document.querySelector({link:?})")).await;
-    eval::<bool>(&page, &format!("(document.querySelector({link:?}).click(), true)")).await;
-    wait_for(&page, "the review page", "document.querySelector('[data-line=\"3\"] .no')").await;
+    wait_for(
+        &page,
+        "the review on the home page",
+        &format!("document.querySelector({link:?})"),
+    )
+    .await;
+    eval::<bool>(
+        &page,
+        &format!("(document.querySelector({link:?}).click(), true)"),
+    )
+    .await;
+    wait_for(
+        &page,
+        "the review page",
+        "document.querySelector('[data-line=\"3\"] .no')",
+    )
+    .await;
 
     assert!(eval::<bool>(&page, "document.querySelector('.cover h2')?.textContent === 'Summary' && !!document.querySelector('.cover li strong')").await, "the cover note is not rendered markdown");
-    assert_eq!(eval::<u32>(&page, "document.querySelectorAll('.files a').length").await, 2);
+    assert_eq!(
+        eval::<u32>(&page, "document.querySelectorAll('.files a').length").await,
+        2
+    );
 
-    eval::<bool>(&page, "(document.querySelector('#doc-2').scrollIntoView(), true)").await;
+    eval::<bool>(
+        &page,
+        "(document.querySelector('#doc-2').scrollIntoView(), true)",
+    )
+    .await;
     wait_for(&page, "the bar naming the second file", "!document.querySelector('nav.bar').hidden && document.querySelector('#bar-file').textContent === 'two.rs'").await;
     eval::<bool>(&page, "(document.querySelector('#bar-top').click(), true)").await;
     wait_for(&page, "the top of the page", "window.scrollY === 0").await;
@@ -80,7 +102,12 @@ async fn a_review_is_opened_found_read_and_commented_on() {
            no.dispatchEvent(new PointerEvent('pointerup', o)); return true; })()",
     )
     .await;
-    wait_for(&page, "the comment box", "document.querySelector('.newbox textarea')").await;
+    wait_for(
+        &page,
+        "the comment box",
+        "document.querySelector('.newbox textarea')",
+    )
+    .await;
     eval::<bool>(
         &page,
         "(() => { const f = document.querySelector('.newbox');
