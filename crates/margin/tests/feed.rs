@@ -60,7 +60,7 @@ fn harness() -> Harness {
     )
     .unwrap();
     let config = Config::parse(&format!(
-        "listen = \"127.0.0.1:0\"\nbase_url = \"http://margin.test:7340/\"\ndatabase = \"{}\"\nagents_file = \"{}\"\notlp_endpoint = \"http://127.0.0.1:1/v1/metrics\"\n",
+        "listen = \"127.0.0.1:0\"\nbase_url = \"http://margin.test:7340/\"\ndatabase = \"{}\"\nagents_file = \"{}\"\notlp_endpoint = \"http://127.0.0.1:1/v1/metrics\"\ninstance = \"test\"\n",
         dir.path().join("m.db").display(),
         agents.display()
     ))

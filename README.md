@@ -36,6 +36,14 @@ writes a fresh token to `<out>` (mode 0600) and its sha256 to the agents file; n
       -d '{"title":"…","cover_note":"…","documents":[{"path":"a.rs","kind":"code","text":"…"}]}' \
       "$BASE_URL/api/collections"      # → 201 {"id": …, "url": …}
 
+**Scratch.** Every deploy also serves a scratch margin: the same binary on the same host and
+tailnet address, port 7341, as `margin-scratch.service`, with its own database
+(`~/.local/share/margin/scratch/`), its own agents file and one agent, `scratch`. Its token is the
+mode-0600 file `~/.config/margin/scratch/token`. A collection posted with that token opens by its
+link and shows on the scratch home page only, never on production's or in its change feed. Whoever
+uses it deletes its collections with `DELETE /api/collections/{id}`; scratch is not backed up.
+Removing the token file makes the next deploy mint a new one.
+
 **Metrics.** margin pushes OTLP to the `otlp_endpoint` in its config; `deploy/grafana/margin.json`
 is the dashboard.
 

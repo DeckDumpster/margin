@@ -24,7 +24,11 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let clock: Arc<dyn margin_core::Clock> = Arc::new(SystemClock);
     let state = AppState {
         db: Db::open(&config.database)?,
-        metrics: Metrics::start(config.otlp_endpoint.clone(), clock.clone()),
+        metrics: Metrics::start(
+            config.otlp_endpoint.clone(),
+            config.instance.clone(),
+            clock.clone(),
+        ),
         clock,
         rng: Arc::new(OsRng),
         highlighter: Arc::new(Highlighter::new()),

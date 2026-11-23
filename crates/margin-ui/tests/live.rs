@@ -54,7 +54,7 @@ async fn rig() -> Rig {
     let agents = dir.path().join("agents.toml");
     std::fs::write(&agents, format!("ada = \"{}\"\n", hash_token(TOKEN))).unwrap();
     let config = Config::parse(&format!(
-        "listen = \"127.0.0.1:0\"\nbase_url = \"http://127.0.0.1\"\ndatabase = \"{}\"\nagents_file = \"{}\"\notlp_endpoint = \"http://127.0.0.1:1\"\n",
+        "listen = \"127.0.0.1:0\"\nbase_url = \"http://127.0.0.1\"\ndatabase = \"{}\"\nagents_file = \"{}\"\notlp_endpoint = \"http://127.0.0.1:1\"\ninstance = \"test\"\n",
         dir.path().join("m.db").display(),
         agents.display()
     ))

@@ -11,6 +11,8 @@ pub struct Config {
     pub database: PathBuf,
     pub agents_file: PathBuf,
     pub otlp_endpoint: String,
+    /// Which of the deploy's servers this is (`production`, `scratch`); labels its metrics.
+    pub instance: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -56,6 +58,7 @@ impl Config {
         let database = get("database")?;
         let agents_file = get("agents_file")?;
         let otlp_endpoint = get("otlp_endpoint")?;
+        let instance = get("instance")?;
         let listen: SocketAddr = listen_text
             .parse()
             .map_err(|_| ConfigError::BadListen(listen_text.clone()))?;
@@ -68,6 +71,7 @@ impl Config {
             database: database.into(),
             agents_file: agents_file.into(),
             otlp_endpoint,
+            instance,
         })
     }
 

@@ -73,7 +73,7 @@ pub struct Metrics {
 
 impl Metrics {
     /// Start the sending thread for `endpoint`.
-    pub fn start(endpoint: String, clock: Arc<dyn Clock>) -> Metrics {
+    pub fn start(endpoint: String, instance: String, clock: Arc<dyn Clock>) -> Metrics {
         let (tx, rx) = sync_channel::<Event>(CHANNEL_CAPACITY);
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(SEND_DEADLINE))
@@ -99,7 +99,7 @@ impl Metrics {
                         Err(RecvTimeoutError::Disconnected) => return,
                     }
                     if dirty {
-                        let body = agg.to_request(clock.now_unix()).encode_to_vec();
+                        let body = agg.to_request(clock.now_unix(), &instance).encode_to_vec();
                         let sent = agent
                             .post(&endpoint)
                             .header("Content-Type", "application/x-protobuf")
@@ -204,7 +204,7 @@ impl Aggregate {
         }
     }
 
-    pub fn to_request(&self, now_unix: i64) -> ExportMetricsServiceRequest {
+    pub fn to_request(&self, now_unix: i64, instance: &str) -> ExportMetricsServiceRequest {
         let now = (now_unix.max(0) as u64) * 1_000_000_000;
         let hist_point = |h: &Hist, attributes: Vec<KeyValue>| HistogramDataPoint {
             attributes,
@@ -316,15 +316,19 @@ impl Aggregate {
                 }),
             ),
         ];
-        envelope(metrics)
+        envelope(metrics, Some(instance))
     }
 }
 
-fn envelope(metrics: Vec<Metric>) -> ExportMetricsServiceRequest {
+fn envelope(metrics: Vec<Metric>, instance: Option<&str>) -> ExportMetricsServiceRequest {
+    let mut attributes = vec![attr("service.name", "margin".into())];
+    if let Some(instance) = instance {
+        attributes.push(attr("margin_instance", instance.into()));
+    }
     ExportMetricsServiceRequest {
         resource_metrics: vec![ResourceMetrics {
             resource: Some(Resource {
-                attributes: vec![attr("service.name", "margin".into())],
+                attributes,
                 ..Default::default()
             }),
             scope_metrics: vec![ScopeMetrics {
@@ -406,7 +410,7 @@ pub fn backup_request(run: &BackupRun) -> ExportMetricsServiceRequest {
             number_data_point::Value::AsInt(run.finished_unix),
         ));
     }
-    envelope(metrics)
+    envelope(metrics, None)
 }
 
 /// Push one request and wait for the answer, under the same deadline as the serving thread.
@@ -459,7 +463,7 @@ mod tests {
         });
         agg.add(&Event::FeedWait { seconds: 12.0 });
         agg.add(&Event::FeedLag { seconds: 0.4 });
-        let req = agg.to_request(1_700_000_000);
+        let req = agg.to_request(1_700_000_000, "production");
         assert_eq!(
             names(&req),
             [
@@ -477,6 +481,61 @@ mod tests {
         assert!(ExportMetricsServiceRequest::decode(&bytes[..]).is_ok());
     }
 
+    fn resource_attr(req: &ExportMetricsServiceRequest, key: &str) -> Option<String> {
+        req.resource_metrics[0]
+            .resource
+            .as_ref()?
+            .attributes
+            .iter()
+            .find(|a| a.key == key)
+            .and_then(|a| match &a.value.as_ref()?.value {
+                Some(Value::StringValue(s)) => Some(s.clone()),
+                _ => None,
+            })
+    }
+
+    #[test_id(tdn90bp)]
+    #[test]
+    fn serving_exports_differ_by_instance_and_the_backup_export_has_none() {
+        let agg = Aggregate::default();
+        let prod = agg.to_request(0, "production");
+        let scratch = agg.to_request(0, "scratch");
+        assert_eq!(
+            resource_attr(&prod, "margin_instance").as_deref(),
+            Some("production")
+        );
+        assert_eq!(
+            resource_attr(&scratch, "margin_instance").as_deref(),
+            Some("scratch")
+        );
+        let backup = backup_request(&BackupRun {
+            ok: true,
+            seconds: 1.0,
+            bytes: 1,
+            finished_unix: 1,
+        });
+        assert_eq!(resource_attr(&backup, "margin_instance"), None);
+    }
+
+    #[test_id(t622tct)]
+    #[test]
+    fn every_serving_panel_expression_names_the_instance() {
+        let dash: serde_json::Value =
+            serde_json::from_str(include_str!("../../../deploy/grafana/margin.json")).unwrap();
+        let mut seen = 0;
+        for panel in dash["panels"].as_array().unwrap() {
+            for target in panel["targets"].as_array().into_iter().flatten() {
+                let expr = target["expr"].as_str().unwrap();
+                if expr.contains("margin_backup_") {
+                    continue;
+                }
+                seen += 1;
+                assert!(expr.contains("margin_instance"), "{expr}");
+            }
+        }
+        assert!(seen >= 8, "{seen}");
+    }
+
     #[test_id(t02ub9b)]
     #[test]
     fn requests_are_counted_per_route_and_status() {
@@ -488,7 +547,7 @@ mod tests {
                 seconds: 0.001,
             });
         }
-        let req = agg.to_request(0);
+        let req = agg.to_request(0, "production");
         let Some(Data::Sum(sum)) = &req.resource_metrics[0].scope_metrics[0].metrics[0].data else {
             panic!("not a sum")
         };

@@ -22,7 +22,7 @@ TERRAFORM_SHA256="71fc43d92ea09907be5d416d2405a6a9c2d1ceaed633f5e175c0af26e8c4b3
 if [ "$build_only" = 1 ]; then
   cargo clippy --workspace --all-targets -- -D warnings
   cargo test --workspace --all-targets --no-run
-  cargo test -p margin --features integration --test http --test feed --no-run
+  cargo test -p margin --features integration --test http --test feed --test deploy --no-run
   cargo test -p margin-ui --no-run
   exit 0
 fi
@@ -52,7 +52,8 @@ for lib in libasound2 libatk-bridge2.0-0 libatk1.0-0 libcups2 libdbus-1-3 libdrm
   fi
   DEBIAN_FRONTEND=noninteractive apt-get install -o DPkg::Lock::Timeout=600 -y -qq --no-install-recommends "$found" >/dev/null
 done
-DEBIAN_FRONTEND=noninteractive apt-get install -o DPkg::Lock::Timeout=600 -y -qq --no-install-recommends unzip curl ca-certificates >/dev/null
+DEBIAN_FRONTEND=noninteractive apt-get install -o DPkg::Lock::Timeout=600 -y -qq --no-install-recommends unzip curl ca-certificates jq >/dev/null
+cargo test -p margin --features integration --test deploy
 
 # The backup bucket's Terraform root: fetched by pinned version and sha256 (unzip and curl are
 # installed above), checked and tested here, never applied.
