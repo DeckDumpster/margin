@@ -261,6 +261,14 @@ async fn an_agent_comment_appears_without_a_reload_and_held_ones_wait_for_publis
     )
     .await;
     screenshot(page, "live-publish-390.png").await;
+    viewport(page, 1280, 844).await;
+    eval::<bool>(
+        page,
+        "document.getElementById('publish').scrollIntoView(); true",
+    )
+    .await;
+    screenshot(page, "live-publish-1280.png").await;
+    viewport(page, 390, 844).await;
 
     eval::<bool>(page, "document.getElementById('publish').click(); true").await;
     wait_for(
