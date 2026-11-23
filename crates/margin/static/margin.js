@@ -1040,10 +1040,10 @@
         var held = holdFocus();
         var restorePlace = holdPlace(plan);
         swapPage(plan, held);
-        updateBar();
         applyChanges(d);
         held.restore();
         if (restorePlace) restorePlace();
+        updateBar(); // after the held line is back, or the bar names the wrong file for a moment
       });
     }
 
