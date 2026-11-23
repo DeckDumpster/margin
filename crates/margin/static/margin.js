@@ -553,6 +553,7 @@
             // The feed may have replaced the thread while the request was out.
             swap(form.closest('.thread'), got.text);
           }
+          recount();
         })
         .catch(function () {
           // No answer, or the answer could not be read or applied: the form is usable again.
@@ -622,9 +623,11 @@
           if (res.status === 204) {
             drawMarks(lines, res);
             thread.remove();
+            recount();
           } else {
             res.text().then(function (html) {
               swap(thread, html);
+              recount();
             });
           }
         });
@@ -888,10 +891,17 @@
       var meta = document.querySelector('.meta');
       var fmeta = page.querySelector('.meta');
       if (meta && fmeta) meta.textContent = fmeta.textContent;
+      var files = document.querySelector('.files');
+      var ffiles = page.querySelector('.files');
+      if (files && ffiles) {
+        files.replaceChildren.apply(files, Array.prototype.map.call(ffiles.children, function (a) {
+          return document.importNode(a, true);
+        }));
+      }
       var cover = document.querySelector('.cover');
       var fcover = page.querySelector('.cover');
       if (fcover && cover) cover.replaceChildren.apply(cover, Array.prototype.map.call(fcover.childNodes, function (n) { return document.importNode(n, true); }));
-      else if (fcover) (meta || document.querySelector('header.top')).after(document.importNode(fcover, true));
+      else if (fcover) (files || meta || document.querySelector('header.top')).after(document.importNode(fcover, true));
       else if (cover) cover.remove();
       if (publish) {
         var fpub = page.getElementById('publish');
@@ -925,7 +935,7 @@
         } else if (prev) {
           prev.after(e.fresh);
         } else {
-          (document.querySelector('.cover') || document.querySelector('.meta')).after(e.fresh);
+          (document.querySelector('.cover') || document.querySelector('.files') || document.querySelector('.meta')).after(e.fresh);
         }
         prev = e.fresh;
       });
@@ -960,6 +970,19 @@
         if (lines) drawMarkList(lines, v.marks);
       });
       if (publish) publish.hidden = d.state === 'closed';
+      recount();
+    }
+
+    // Each row of the files list says how many comments its section holds.
+    function recount() {
+      var rows = document.querySelectorAll('.files a');
+      Array.prototype.forEach.call(rows, function (a) {
+        var sec = document.getElementById((a.getAttribute('href') || '').slice(1));
+        var sum = a.querySelector('.fsum');
+        if (!sec || !sum) return;
+        var n = sec.querySelectorAll('.cm').length;
+        sum.textContent = sum.textContent.replace(/ · .*$/, ' · ' + (n === 0 ? 'no comments' : n === 1 ? '1 comment' : n + ' comments'));
+      });
     }
 
     // Nothing on the page changes until everything it needs has arrived; a failure leaves the page

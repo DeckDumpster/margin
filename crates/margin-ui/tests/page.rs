@@ -91,10 +91,18 @@ async fn screenshot(page: &Page, name: &str) {
 }
 
 async fn serve() -> (String, tempfile::TempDir) {
-    serve_with_cover("A long file.").await
+    serve_fixture("long.rs", "A long file.").await
 }
 
 async fn serve_with_cover(cover: &str) -> (String, tempfile::TempDir) {
+    serve_fixture("long.rs", cover).await
+}
+
+async fn serve_path(path: &str) -> (String, tempfile::TempDir) {
+    serve_fixture(path, "A long file.").await
+}
+
+async fn serve_fixture(path: &str, cover: &str) -> (String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let agents = dir.path().join("agents.toml");
     std::fs::write(&agents, "").unwrap();
@@ -112,14 +120,14 @@ async fn serve_with_cover(cover: &str) -> (String, tempfile::TempDir) {
         metrics: Metrics::detached(),
         highlighter: Arc::new(Highlighter::new()),
     };
-    let cover = cover.to_string();
+    let (path, cover) = (path.to_string(), cover.to_string());
     state
         .db
         .call(move |conn| {
             let docs = vec![(
                 "d1".to_string(),
                 NewDocument {
-                    path: "long.rs".into(),
+                    path: path.clone(),
                     kind: Kind::Code,
                     text: FIXTURE.to_string(),
                 },
@@ -397,4 +405,34 @@ async fn the_cover_note_is_photographed_on_a_phone_and_a_desktop_in_both_schemes
     }
     browser.close().await.unwrap();
     let _ = pump.await;
+}
+
+#[test_id(fp8w2m4)]
+#[tokio::test]
+#[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
+async fn a_path_of_150_characters_without_spaces_leaves_nothing_past_the_phone_width() {
+    let (url, dir) = serve_path(&"p".repeat(150)).await;
+    let (mut browser, pump) = support::launch(dir.path()).await;
+    let page = browser.new_page("about:blank").await.unwrap();
+    viewport(&page, PHONE, 844, true).await;
+    page.goto(&url)
+        .await
+        .unwrap()
+        .wait_for_navigation()
+        .await
+        .unwrap();
+    let w = widths(&page).await;
+    assert_eq!(w.inner_width, PHONE, "{w:?}");
+    assert!(
+        page.evaluate("document.querySelectorAll('.files a').length === 1")
+            .await
+            .unwrap()
+            .into_value::<bool>()
+            .unwrap(),
+        "no files row"
+    );
+    assert!(w.any_overflow.is_empty(), "elements past {PHONE}px: {w:?}");
+    assert!(w.page_scroll_width <= PHONE, "{w:?}");
+    browser.close().await.ok();
+    pump.abort();
 }

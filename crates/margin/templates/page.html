@@ -14,6 +14,7 @@
 <button type="button" id="publish"{% if !can_publish %} hidden{% endif %}>Publish</button>
 </header>
 <p class="meta">{{ state }} · {{ docs.len() }} document{% if docs.len() != 1 %}s{% endif %}</p>
+<nav class="files" aria-label="Files">{% for doc in docs %}<a href="#doc-{{ loop.index }}"><span class="fpath">{{ doc.path }}</span><span class="fsum">{{ doc.summary() }}</span></a>{% endfor %}</nav>
 {% if !cover_html.is_empty() %}<section class="cover">{{ cover_html|safe }}</section>{% endif %}
 {% for doc in docs %}<section class="doc" id="doc-{{ loop.index }}">
 <h2 class="path">{{ doc.path }} <span class="version">version {{ doc.version }}</span></h2>

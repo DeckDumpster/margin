@@ -1905,3 +1905,103 @@ async fn the_carry_route_refuses_a_bad_anchor_with_a_400() {
         assert_eq!(s, StatusCode::BAD_REQUEST, "{q}");
     }
 }
+
+/// The `<a>` rows of the page's `nav.files`, as (href, path, summary).
+fn file_rows(page: &str) -> Vec<(String, String, String)> {
+    let nav = page
+        .split("<nav class=\"files\"")
+        .nth(1)
+        .expect("no nav.files")
+        .split("</nav>")
+        .next()
+        .unwrap();
+    nav.split("<a href=\"")
+        .skip(1)
+        .map(|row| {
+            let href = row[..row.find('"').unwrap()].to_string();
+            let span = |class: &str| {
+                let rest = row
+                    .split(&format!("<span class=\"{class}\">"))
+                    .nth(1)
+                    .unwrap();
+                rest[..rest.find("</span>").unwrap()].to_string()
+            };
+            (href, span("fpath"), span("fsum"))
+        })
+        .collect()
+}
+
+#[test_id(fl3s9k2)]
+#[tokio::test]
+async fn the_page_lists_its_files_with_line_and_comment_counts_and_not_held_ones() {
+    let h = harness();
+    let created = post(
+        &h.app,
+        "t",
+        vec![doc("a.rs", "one\n"), doc("b/long.rs", "x\ny\nz\n")],
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_string();
+    let page = |h: &Harness, id: &str| {
+        let (app, uri) = (h.app.clone(), format!("/c/{id}"));
+        async move { send(&app, Method::GET, &uri, None, None).await.1 }
+    };
+    let (_, got) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{id}"),
+        None,
+        None,
+    )
+    .await;
+    let got: Value = serde_json::from_str(&got).unwrap();
+    let v2 = got["documents"][1]["version_id"].as_i64().unwrap();
+    let (_, f, _) = new_thread(&h, &id, v2, 1, 2, "first").await;
+    let tid = attr(&f, "data-thread");
+    send(
+        &h.app,
+        Method::POST,
+        &format!("/c/{id}/threads/{tid}/comments"),
+        None,
+        Some(json!({"body": "second"})),
+    )
+    .await;
+    let (status, body) = send(
+        &h.app,
+        Method::POST,
+        &format!("/api/collections/{id}/threads"),
+        Some(TOKEN),
+        Some(json!({"path": "a.rs", "first_line": 1, "last_line": 1, "body": "secret", "held": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let html = page(&h, &id).await;
+    assert!(html.find("class=\"files\"").unwrap() < html.find("class=\"cover\"").unwrap());
+    assert_eq!(
+        file_rows(&html),
+        vec![
+            (
+                "#doc-1".into(),
+                "a.rs".into(),
+                "1 line · no comments".into()
+            ),
+            (
+                "#doc-2".into(),
+                "b/long.rs".into(),
+                "3 lines · 2 comments".into()
+            ),
+        ]
+    );
+
+    send(
+        &h.app,
+        Method::POST,
+        &format!("/c/{id}/publish"),
+        None,
+        None,
+    )
+    .await;
+    let html = page(&h, &id).await;
+    assert_eq!(file_rows(&html)[0].2, "1 line · 1 comment");
+}

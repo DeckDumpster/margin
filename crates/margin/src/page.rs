@@ -82,7 +82,28 @@ pub struct DocView {
     pub version: i64,
     pub version_id: i64,
     pub digits: usize,
+    /// Comments in the document's reader-visible threads.
+    pub comments: usize,
     pub lines: Vec<LineView>,
+}
+
+fn count(n: usize, one: &str, many: &str) -> String {
+    match n {
+        1 => format!("1 {one}"),
+        _ => format!("{n} {many}"),
+    }
+}
+
+impl DocView {
+    /// `235 lines · 2 comments`, as the files list shows it.
+    pub fn summary(&self) -> String {
+        let comments = if self.comments == 0 {
+            "no comments".to_string()
+        } else {
+            count(self.comments, "comment", "comments")
+        };
+        format!("{} · {comments}", count(self.lines.len(), "line", "lines"))
+    }
 }
 
 #[derive(Template)]
@@ -191,6 +212,7 @@ pub fn render(
                 version: d.version,
                 version_id: d.version_id,
                 digits: lines.len().max(1).to_string().len(),
+                comments: on.iter().map(|t| t.comments.len()).sum(),
                 lines,
             }
         })

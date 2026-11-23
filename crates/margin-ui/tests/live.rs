@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chromiumoxide::browser::{Browser, BrowserConfig};
-use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
+use chromiumoxide::cdp::browser_protocol::emulation::{
+    MediaFeature, SetDeviceMetricsOverrideParams, SetEmulatedMediaParams,
+};
 use chromiumoxide::page::{Page, ScreenshotParams};
 use futures::StreamExt;
 use margin::agents::{OsRng, hash_token};
@@ -722,4 +724,116 @@ async fn a_page_fetch_that_fails_once_keeps_the_draft_and_the_version_then_appea
         .await
     );
     rig.close().await;
+}
+
+const ROW: &str = "document.querySelector('.files a[href=\"#doc-2\"] .fsum').textContent";
+
+#[test_id(fl1ck2r)]
+#[tokio::test]
+#[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
+async fn the_files_list_jumps_to_a_section_and_follows_comments_versions_and_a_new_cover() {
+    let rig = rig().await;
+    let page = &rig.page;
+    assert_eq!(eval::<String>(page, ROW).await, "60 lines · no comments");
+    top_shots(page).await;
+    assert!(
+        eval::<bool>(
+            page,
+            "document.querySelector('.meta').nextElementSibling.matches('nav.files')"
+        )
+        .await
+    );
+
+    eval::<bool>(
+        page,
+        "document.querySelector('.files a[href=\"#doc-2\"]').click(); true",
+    )
+    .await;
+    wait_for(
+        page,
+        "section 2 on screen",
+        "(() => { const t = document.getElementById('doc-2').getBoundingClientRect().top; return t >= -1 && t < window.innerHeight; })()",
+    )
+    .await;
+
+    rig.agent_thread(5, "counted", false).await;
+    wait_for(
+        page,
+        "row 1's count",
+        "document.querySelector('.files a[href=\"#doc-1\"] .fsum').textContent === '60 lines · 1 comment'",
+    )
+    .await;
+    assert_eq!(eval::<String>(page, ROW).await, "60 lines · no comments");
+    rig.agent(
+        "POST",
+        "/api/collections/live/threads",
+        json!({"path": "b.rs", "first_line": 5, "last_line": 5, "body": "on b", "held": false}),
+    )
+    .await;
+    wait_for(
+        page,
+        "the count",
+        &format!("{ROW} === '60 lines · 1 comment'"),
+    )
+    .await;
+
+    rig.post_version("d2", &revised(|l| l.push("// more".into())), 2, 2)
+        .await;
+    wait_for(
+        page,
+        "the line count",
+        &format!("{ROW} === '61 lines · 1 comment'"),
+    )
+    .await;
+    assert!(eval::<bool>(page, "!!document.getElementById('doc-2')").await);
+
+    let (status, got) = rig
+        .agent(
+            "PATCH",
+            "/api/collections/live",
+            json!({"cover_note": "read this first"}),
+        )
+        .await;
+    assert_eq!(status, 200, "{got}");
+    wait_for(
+        page,
+        "the cover after the list",
+        "document.querySelector('.cover') && document.querySelector('.files').nextElementSibling === document.querySelector('.cover')",
+    )
+    .await;
+    rig.close().await;
+}
+
+/// The page top at both widths in both colour schemes, without the list ("before") and with it.
+async fn top_shots(page: &Page) {
+    for (scheme, width) in [
+        ("light", 390),
+        ("light", 1280),
+        ("dark", 390),
+        ("dark", 1280),
+    ] {
+        page.execute(
+            SetEmulatedMediaParams::builder()
+                .feature(MediaFeature::new("prefers-color-scheme", scheme))
+                .build(),
+        )
+        .await
+        .unwrap();
+        viewport(page, width, 844).await;
+        for (when, hidden) in [("before", true), ("after", false)] {
+            eval::<bool>(
+                page,
+                &format!(
+                    "(() => {{ document.querySelector('.files').style.display = '{}'; window.scrollTo(0, 0); return true; }})()",
+                    if hidden { "none" } else { "" }
+                ),
+            )
+            .await;
+            screenshot(page, &format!("files-top-{when}-{width}-{scheme}.png")).await;
+        }
+    }
+    page.execute(SetEmulatedMediaParams::builder().build())
+        .await
+        .unwrap();
+    viewport(page, 390, 844).await;
 }
