@@ -1,0 +1,10 @@
+[Unit]
+Description=Back up margin's database off-box
+
+[Service]
+Type=oneshot
+# AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION and MARGIN_BACKUP_BUCKET; the key
+# can only put objects (see README, Backups).
+EnvironmentFile=%h/.config/margin/backup.env
+ExecStart=%h/.local/lib/margin/margin backup --config %h/.config/margin/margin.toml
+CPUQuota=25%

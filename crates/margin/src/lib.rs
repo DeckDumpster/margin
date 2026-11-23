@@ -3,6 +3,7 @@
 
 pub mod agents;
 pub mod api;
+pub mod backup;
 pub mod changes;
 pub mod config;
 pub mod db;

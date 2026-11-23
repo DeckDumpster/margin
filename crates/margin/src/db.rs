@@ -21,6 +21,11 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0004_versions.sql"),
 ];
 
+/// The `user_version` of a database this binary has fully migrated.
+pub fn schema_version() -> usize {
+    MIGRATIONS.len()
+}
+
 type Job = Box<dyn FnOnce(&mut Connection) + Send>;
 
 #[derive(Debug)]

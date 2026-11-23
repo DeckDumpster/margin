@@ -52,9 +52,19 @@ if [ ! -e "$conf/agents.toml" ]; then
 fi
 
 install -m 0644 "$here/margin.service" "$unit_dir/margin.service"
+install -m 0644 "$here/margin-backup.service" "$unit_dir/margin-backup.service"
+install -m 0644 "$here/margin-backup.timer" "$unit_dir/margin-backup.timer"
 systemctl --user daemon-reload
 systemctl --user enable margin.service
 systemctl --user restart margin.service
+
+# The backup key lives in backup.env, placed by hand from the secret margin/backup (README,
+# Backups). Without it the timer would fail every 15 minutes, so it is not enabled; say so loudly.
+if [ -s "$conf/backup.env" ]; then
+  systemctl --user enable --now margin-backup.timer
+else
+  echo "deploy.sh: WARNING: $conf/backup.env is missing or empty: backups are NOT running" >&2
+fi
 
 for _ in $(seq 30); do
   if reported="$(curl -fsS --max-time 2 "http://$ip:$port/healthz" 2>/dev/null)" \
