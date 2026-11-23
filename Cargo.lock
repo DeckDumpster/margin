@@ -900,6 +900,7 @@ version = "0.1.0"
 dependencies = [
  "askama",
  "axum",
+ "flate2",
  "getrandom 0.3.4",
  "http-body-util",
  "margin-core",

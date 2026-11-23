@@ -6,6 +6,9 @@ set -euo pipefail
 CHROME_VERSION="156.0.8078.79"
 CHROME_SHA256="7088865f510de22a83226817266274a1a4a57157d78ab429e6315701b19669f7"
 
+TERRAFORM_VERSION="1.13.3"
+TERRAFORM_SHA256="71fc43d92ea09907be5d416d2405a6a9c2d1ceaed633f5e175c0af26e8c4b365"
+
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
@@ -33,8 +36,27 @@ for lib in libasound2 libatk-bridge2.0-0 libatk1.0-0 libcups2 libdbus-1-3 libdrm
 done
 DEBIAN_FRONTEND=noninteractive apt-get install -o DPkg::Lock::Timeout=600 -y -qq --no-install-recommends unzip curl ca-certificates >/dev/null
 
+# The backup bucket's Terraform root: fetched by pinned version and sha256 (unzip and curl are
+# installed above), checked and tested here, never applied.
+tf_dir="$(mktemp -d)"
+trap 'rm -rf "$tf_dir"' EXIT
+if ! terraform version 2>/dev/null | head -n 1 | grep -qx "Terraform v${TERRAFORM_VERSION}"; then
+  curl -fsSL --retry 3 --max-time 300 -o "$tf_dir/terraform.zip" \
+    "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+  echo "${TERRAFORM_SHA256}  $tf_dir/terraform.zip" | sha256sum --check --strict -
+  unzip -q "$tf_dir/terraform.zip" terraform -d "$tf_dir"
+  export PATH="$tf_dir:$PATH"
+fi
+(
+  cd infra-backups
+  terraform fmt -check -recursive
+  terraform init -backend=false -input=false
+  terraform validate
+  terraform test
+)
+
 browser_dir="$(mktemp -d)"
-trap 'rm -rf "$browser_dir"' EXIT
+trap 'rm -rf "$browser_dir" "$tf_dir"' EXIT
 curl -fsSL --retry 3 --max-time 300 -o "$browser_dir/chrome.zip" \
   "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip"
 echo "${CHROME_SHA256}  $browser_dir/chrome.zip" | sha256sum --check --strict -

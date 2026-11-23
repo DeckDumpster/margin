@@ -13,7 +13,7 @@ use opentelemetry_proto::tonic::common::v1::{
     AnyValue, InstrumentationScope, KeyValue, any_value::Value,
 };
 use opentelemetry_proto::tonic::metrics::v1::{
-    AggregationTemporality, Histogram, HistogramDataPoint, Metric, NumberDataPoint,
+    AggregationTemporality, Gauge, Histogram, HistogramDataPoint, Metric, NumberDataPoint,
     ResourceMetrics, ScopeMetrics, Sum, metric::Data, number_data_point,
 };
 use opentelemetry_proto::tonic::resource::v1::Resource;
@@ -302,23 +302,115 @@ impl Aggregate {
                 }),
             ),
         ];
-        ExportMetricsServiceRequest {
-            resource_metrics: vec![ResourceMetrics {
-                resource: Some(Resource {
-                    attributes: vec![attr("service.name", "margin".into())],
+        envelope(metrics)
+    }
+}
+
+fn envelope(metrics: Vec<Metric>) -> ExportMetricsServiceRequest {
+    ExportMetricsServiceRequest {
+        resource_metrics: vec![ResourceMetrics {
+            resource: Some(Resource {
+                attributes: vec![attr("service.name", "margin".into())],
+                ..Default::default()
+            }),
+            scope_metrics: vec![ScopeMetrics {
+                scope: Some(InstrumentationScope {
+                    name: "margin".into(),
                     ..Default::default()
                 }),
-                scope_metrics: vec![ScopeMetrics {
-                    scope: Some(InstrumentationScope {
-                        name: "margin".into(),
-                        ..Default::default()
-                    }),
-                    metrics,
-                    ..Default::default()
-                }],
+                metrics,
                 ..Default::default()
             }],
-        }
+            ..Default::default()
+        }],
+    }
+}
+
+pub const BACKUP_RUNS: &str = "margin_backup_runs";
+pub const BACKUP_SECONDS: &str = "margin_backup_seconds";
+pub const BACKUP_BYTES: &str = "margin_backup_bytes";
+pub const BACKUP_LAST_SUCCESS: &str = "margin_backup_last_success_timestamp_seconds";
+
+/// What one `margin backup` run reports about itself.
+pub struct BackupRun {
+    pub ok: bool,
+    pub seconds: f64,
+    /// Compressed size of the uploaded snapshot; meaningful only when `ok`.
+    pub bytes: u64,
+    pub finished_unix: i64,
+}
+
+/// The series for one backup run. A failed run reports no size and no last-success time, so
+/// the last-success gauge keeps the time of the last run that did upload.
+pub fn backup_request(run: &BackupRun) -> ExportMetricsServiceRequest {
+    let now = (run.finished_unix.max(0) as u64) * 1_000_000_000;
+    let point = |value: number_data_point::Value, attributes: Vec<KeyValue>| NumberDataPoint {
+        attributes,
+        time_unix_nano: now,
+        value: Some(value),
+        ..Default::default()
+    };
+    let metric = |name: &str, data: Data| Metric {
+        name: name.into(),
+        data: Some(data),
+        ..Default::default()
+    };
+    let gauge = |name: &str, value: number_data_point::Value| {
+        metric(
+            name,
+            Data::Gauge(Gauge {
+                data_points: vec![point(value, vec![])],
+            }),
+        )
+    };
+    let result = if run.ok { "ok" } else { "error" };
+    // One process is one run, so the counter is a delta of one; sum it over a window to count.
+    let mut metrics = vec![
+        metric(
+            BACKUP_RUNS,
+            Data::Sum(Sum {
+                data_points: vec![point(
+                    number_data_point::Value::AsInt(1),
+                    vec![attr("result", result.into())],
+                )],
+                aggregation_temporality: AggregationTemporality::Delta as i32,
+                is_monotonic: true,
+            }),
+        ),
+        gauge(
+            BACKUP_SECONDS,
+            number_data_point::Value::AsDouble(run.seconds),
+        ),
+    ];
+    if run.ok {
+        metrics.push(gauge(
+            BACKUP_BYTES,
+            number_data_point::Value::AsInt(run.bytes as i64),
+        ));
+        metrics.push(gauge(
+            BACKUP_LAST_SUCCESS,
+            number_data_point::Value::AsInt(run.finished_unix),
+        ));
+    }
+    envelope(metrics)
+}
+
+/// Push one request and wait for the answer, under the same deadline as the serving thread.
+pub fn send_once(endpoint: &str, req: &ExportMetricsServiceRequest) -> Result<(), String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(SEND_DEADLINE))
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let body = req.encode_to_vec();
+    let response = agent
+        .post(endpoint)
+        .header("Content-Type", "application/x-protobuf")
+        .send(&body[..])
+        .map_err(|e| e.to_string())?;
+    match response.status().as_u16() {
+        200..=299 => Ok(()),
+        status => Err(format!("{endpoint} answered {status}")),
     }
 }
 
@@ -403,5 +495,84 @@ mod tests {
         let m = Metrics { tx };
         m.push(Event::QueueFull);
         m.push(Event::QueueFull); // full: dropped, returns at once
+    }
+
+    fn point_names(req: &ExportMetricsServiceRequest) -> Vec<String> {
+        names(req)
+    }
+
+    #[test_id(tkbqe2v)]
+    #[test]
+    fn a_failed_backup_run_reports_no_last_success() {
+        let run = |ok| BackupRun {
+            ok,
+            seconds: 2.0,
+            bytes: 10,
+            finished_unix: 1_700_000_000,
+        };
+        assert_eq!(
+            point_names(&backup_request(&run(true))),
+            [
+                BACKUP_RUNS,
+                BACKUP_SECONDS,
+                BACKUP_BYTES,
+                BACKUP_LAST_SUCCESS
+            ]
+        );
+        assert_eq!(
+            point_names(&backup_request(&run(false))),
+            [BACKUP_RUNS, BACKUP_SECONDS]
+        );
+    }
+
+    #[test_id(tis33u9)]
+    #[test]
+    fn send_once_posts_one_decodable_request_and_reports_a_refusal() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for status in ["200 OK", "503 Service Unavailable"] {
+                let (mut conn, _) = listener.accept().unwrap();
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    let n = conn.read(&mut chunk).unwrap();
+                    buf.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&buf).to_lowercase();
+                    if let Some(head) = text.find("\r\n\r\n") {
+                        let want = text
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length: "))
+                            .and_then(|v| v.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        if buf.len() >= head + 4 + want {
+                            break;
+                        }
+                    }
+                }
+                seen.push(buf);
+                write!(
+                    conn,
+                    "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+            }
+            seen
+        });
+        let req = backup_request(&BackupRun {
+            ok: true,
+            seconds: 1.0,
+            bytes: 5,
+            finished_unix: 1_700_000_000,
+        });
+        let url = format!("http://{addr}/opentelemetry/v1/metrics");
+        assert!(send_once(&url, &req).is_ok());
+        assert!(send_once(&url, &req).unwrap_err().contains("503"));
+        let seen = server.join().unwrap();
+        let text = String::from_utf8_lossy(&seen[0]).to_string();
+        assert!(text.starts_with("POST /opentelemetry/v1/metrics"), "{text}");
+        assert!(text.contains("margin_backup_last_success_timestamp_seconds"));
     }
 }

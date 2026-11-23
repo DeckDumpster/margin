@@ -200,6 +200,27 @@
           "legendFormat": "lag p95"
         }
       ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Age of the last successful backup (seconds; backups run every 900)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "time() - max(margin_backup_last_success_timestamp_seconds)", "legendFormat": "age" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Backup runs by result (per hour)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (result) (sum_over_time(margin_backup_runs[1h]))", "legendFormat": "{{result}}" }
+      ]
     }
   ]
 }
