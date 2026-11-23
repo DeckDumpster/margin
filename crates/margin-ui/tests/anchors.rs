@@ -11,7 +11,8 @@ use chromiumoxide::cdp::browser_protocol::emulation::{
     SetDeviceMetricsOverrideParams, SetTouchEmulationEnabledParams,
 };
 use chromiumoxide::cdp::browser_protocol::input::{
-    DispatchTouchEventParams, DispatchTouchEventReturns, DispatchTouchEventType, TouchPoint,
+    DispatchTouchEventParams, DispatchTouchEventReturns, DispatchTouchEventType, TimeSinceEpoch,
+    TouchPoint,
 };
 use chromiumoxide::page::{Page, ScreenshotParams};
 use margin::agents::OsRng;
@@ -160,6 +161,8 @@ struct EndTouch {
     kind: DispatchTouchEventType,
     #[serde(rename = "touchPoints")]
     touch_points: Vec<TouchPoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timestamp: Option<TimeSinceEpoch>,
 }
 
 impl chromiumoxide::Method for EndTouch {
@@ -172,7 +175,14 @@ impl chromiumoxide::Command for EndTouch {
     type Response = DispatchTouchEventReturns;
 }
 
-async fn touch(page: &Page, kind: DispatchTouchEventType, at: Option<(f64, f64)>) {
+/// `stamp` is the event's CDP timestamp in seconds; `None` lets Chrome stamp it on arrival.
+async fn touch(
+    page: &Page,
+    kind: DispatchTouchEventType,
+    at: Option<(f64, f64)>,
+    stamp: Option<f64>,
+) {
+    let timestamp = stamp.map(TimeSinceEpoch::new);
     let points = at
         .map(|(x, y)| vec![TouchPoint::new(x, y)])
         .unwrap_or_default();
@@ -183,6 +193,7 @@ async fn touch(page: &Page, kind: DispatchTouchEventType, at: Option<(f64, f64)>
         let params = EndTouch {
             kind: kind.clone(),
             touch_points: points,
+            timestamp,
         };
         let json = serde_json::to_string(&params).unwrap();
         page.execute(params)
@@ -190,7 +201,8 @@ async fn touch(page: &Page, kind: DispatchTouchEventType, at: Option<(f64, f64)>
             .unwrap_or_else(|e| panic!("dispatching {kind:?} {json}: {e}"));
         return;
     }
-    let params = DispatchTouchEventParams::new(kind.clone(), points);
+    let mut params = DispatchTouchEventParams::new(kind.clone(), points);
+    params.timestamp = timestamp;
     let json = serde_json::to_string(&params).unwrap();
     page.execute(params)
         .await
@@ -267,8 +279,14 @@ const MEASURE: &str = r#"(() => {
 async fn a_tap_on_line_10_opens_the_box_under_line_10() {
     let rig = rig().await;
     let (x, y) = number_of(&rig.page, 10).await;
-    touch(&rig.page, DispatchTouchEventType::TouchStart, Some((x, y))).await;
-    touch(&rig.page, DispatchTouchEventType::TouchEnd, None).await;
+    touch(
+        &rig.page,
+        DispatchTouchEventType::TouchStart,
+        Some((x, y)),
+        None,
+    )
+    .await;
+    touch(&rig.page, DispatchTouchEventType::TouchEnd, None, None).await;
     wait_for(
         &rig.page,
         "the box opened",
@@ -300,7 +318,7 @@ async fn a_held_press_dragged_to_the_bottom_edge_scrolls_and_posts_a_range_from_
     .await;
     let top_before: f64 = eval(page, "window.scrollY").await;
 
-    touch(page, DispatchTouchEventType::TouchStart, Some((x, y))).await;
+    touch(page, DispatchTouchEventType::TouchStart, Some((x, y)), None).await;
     wait_for(
         page,
         "the hold began a range",
@@ -313,9 +331,16 @@ async fn a_held_press_dragged_to_the_bottom_edge_scrolls_and_posts_a_range_from_
         page,
         DispatchTouchEventType::TouchMove,
         Some((x, (y + edge) / 2.0)),
+        None,
     )
     .await;
-    touch(page, DispatchTouchEventType::TouchMove, Some((x, edge))).await;
+    touch(
+        page,
+        DispatchTouchEventType::TouchMove,
+        Some((x, edge)),
+        None,
+    )
+    .await;
     wait_for(
         page,
         "the page scrolled by itself",
@@ -331,7 +356,7 @@ async fn a_held_press_dragged_to_the_bottom_edge_scrolls_and_posts_a_range_from_
         ),
     )
     .await;
-    touch(page, DispatchTouchEventType::TouchEnd, None).await;
+    touch(page, DispatchTouchEventType::TouchEnd, None, None).await;
     wait_for(page, "the box opened", "document.querySelector('.newbox')").await;
     let (first, last): (u32, u32) = eval(
         page,
@@ -368,24 +393,44 @@ async fn a_held_press_dragged_to_the_bottom_edge_scrolls_and_posts_a_range_from_
     rig.close().await;
 }
 
-#[test_id(t2he8cd)]
-#[tokio::test]
-#[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
-async fn a_swipe_without_the_hold_scrolls_the_page_and_creates_nothing() {
+/// Swipe up from line 50 with every event stamped 16 ms after the last, so the page judges the
+/// swipe by event time whatever the speed of the test. With `after_hold` the swipe starts only
+/// once the hold timer has fired, as when the page handles the first move late.
+async fn swipe_scrolls_and_creates_nothing(after_hold: bool) {
     let rig = rig().await;
     let page = &rig.page;
     let (x, y) = number_of(page, 50).await;
     let before: f64 = eval(page, "window.scrollY").await;
-    touch(page, DispatchTouchEventType::TouchStart, Some((x, y))).await;
+    let start = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
+    let stamp = |n: u32| Some(start + 0.016 * f64::from(n));
+    touch(
+        page,
+        DispatchTouchEventType::TouchStart,
+        Some((x, y)),
+        stamp(0),
+    )
+    .await;
+    if after_hold {
+        wait_for(
+            page,
+            "the hold began a range",
+            "document.body.dataset.gesture === 'ranging'",
+        )
+        .await;
+    }
     for step in 1..=6 {
         touch(
             page,
             DispatchTouchEventType::TouchMove,
             Some((x, y - 60.0 * f64::from(step))),
+            stamp(step),
         )
         .await;
     }
-    touch(page, DispatchTouchEventType::TouchEnd, None).await;
+    touch(page, DispatchTouchEventType::TouchEnd, None, stamp(7)).await;
     wait_for(
         page,
         "the page scrolled",
@@ -399,6 +444,20 @@ async fn a_swipe_without_the_hold_scrolls_the_page_and_creates_nothing() {
     .await;
     assert_eq!(state, (false, false, false));
     rig.close().await;
+}
+
+#[test_id(t2he8cd)]
+#[tokio::test]
+#[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
+async fn a_swipe_without_the_hold_scrolls_the_page_and_creates_nothing() {
+    swipe_scrolls_and_creates_nothing(false).await;
+}
+
+#[test_id(tzz4vbg)]
+#[tokio::test]
+#[ignore = "needs MARGIN_CHROMIUM; gate.sh runs it with --ignored"]
+async fn a_swipe_handled_after_the_hold_timer_scrolls_and_creates_nothing() {
+    swipe_scrolls_and_creates_nothing(true).await;
 }
 
 #[test_id(tj3wmv9)]
