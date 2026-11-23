@@ -428,6 +428,9 @@ struct NewThreadBody {
     version_id: i64,
     first_line: u32,
     last_line: u32,
+    /// Both or neither: the columns of a highlight of some words.
+    start_col: Option<u32>,
+    end_col: Option<u32>,
     body: String,
 }
 
@@ -438,6 +441,15 @@ async fn create_thread(
 ) -> Result<Response, ApiError> {
     let b = json_body(body)?;
     let text = clean_body(&b.body)?;
+    let cols = match (b.start_col, b.end_col) {
+        (Some(s), Some(e)) => Some((s, e)),
+        (None, None) => None,
+        _ => {
+            return Err(ApiError::BadRequest(
+                "start_col and end_col come together".into(),
+            ));
+        }
+    };
     let (thread_id, comment_id) = (margin_core::new_id(&*s.rng), margin_core::new_id(&*s.rng));
     let now = s.clock.now_unix();
     let made = s
@@ -449,7 +461,11 @@ async fn create_thread(
                     comment_id: &comment_id,
                     collection_id: &id,
                     version_id: b.version_id,
-                    anchor: Anchor::lines(b.first_line, b.last_line),
+                    anchor: Anchor {
+                        first: b.first_line,
+                        last: b.last_line,
+                        cols,
+                    },
                     body: &text,
                     now,
                 },

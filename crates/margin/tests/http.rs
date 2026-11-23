@@ -867,3 +867,207 @@ async fn the_thread_list_paginates_without_repeats() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+/// POST a thread with highlight columns; returns (status, body, the marks header).
+async fn new_highlight(
+    h: &Harness,
+    id: &str,
+    version: i64,
+    lines: (u32, u32),
+    cols: (u32, u32),
+) -> (StatusCode, String, Option<Value>) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/c/{id}/threads"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({"version_id": version, "first_line": lines.0, "last_line": lines.1,
+                   "start_col": cols.0, "end_col": cols.1, "body": "these words"})
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let marks = resp
+        .headers()
+        .get("x-margin-marks")
+        .map(|v| serde_json::from_str(v.to_str().unwrap()).unwrap());
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8(bytes.to_vec()).unwrap(), marks)
+}
+
+/// A one-document collection of Rust source; (collection id, version id).
+async fn rust_collection(h: &Harness, text: &str) -> (String, i64) {
+    let created = post(&h.app, "t", vec![doc("a.rs", text)]).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    let (_, body) = send(&h.app, Method::GET, &format!("/api/collections/{id}"), None, None).await;
+    let got: Value = serde_json::from_str(&body).unwrap();
+    (id, got["documents"][0]["version_id"].as_i64().unwrap())
+}
+
+/// The inner HTML of line `n`'s code cell on the reader page.
+fn code_of(page: &str, n: usize) -> String {
+    let row = page.split(&format!("data-line=\"{n}\"")).nth(1).unwrap();
+    let code = row.split("<span class=\"code\">").nth(1).unwrap();
+    code.split("</span></div>").next().unwrap().to_string()
+}
+
+fn text_of(html: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            c if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&")
+}
+
+/// The text of each `hl` run in `html`, in order, with its opening tag.
+fn runs_of(html: &str) -> Vec<(String, String)> {
+    html.split("<span class=\"hl ")
+        .skip(1)
+        .map(|rest| {
+            let tag_end = rest.find('>').unwrap();
+            let open = rest[..tag_end].to_string();
+            let mut depth = 1;
+            let mut at = tag_end + 1;
+            let body_start = at;
+            while depth > 0 {
+                let next_open = rest[at..].find("<span").map(|p| p + at);
+                let next_close = rest[at..].find("</span>").map(|p| p + at).unwrap();
+                match next_open {
+                    Some(o) if o < next_close => {
+                        depth += 1;
+                        at = o + 5;
+                    }
+                    _ => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return (open, rest[body_start..next_close].to_string());
+                        }
+                        at = next_close + 7;
+                    }
+                }
+            }
+            unreachable!()
+        })
+        .collect()
+}
+
+#[test_id(tag9kvn)]
+#[tokio::test]
+async fn posting_columns_stores_them_and_the_page_wraps_exactly_those_characters() {
+    let h = harness();
+    let (id, v) = rust_collection(&h, "fn main() {\n    let s = \"a<b\";\n}\n").await;
+    // "main() {" on line 1: columns 3..11.
+    let (status, _, marks) = new_highlight(&h, &id, v, (1, 1), (3, 11)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let marks = marks.unwrap();
+    assert_eq!(marks[0]["start_col"], 3);
+    assert_eq!(marks[0]["end_col"], 11);
+    let (_, listing) = send(&h.app, Method::GET, &format!("/c/{id}/threads"), None, None).await;
+    let listing: Value = serde_json::from_str(&listing).unwrap();
+    assert_eq!(listing["items"][0]["start_col"], 3);
+    assert_eq!(listing["items"][0]["end_col"], 11);
+
+    let (_, page) = send(&h.app, Method::GET, &format!("/c/{id}"), None, None).await;
+    let line1 = code_of(&page, 1);
+    assert_eq!(text_of(&line1), "fn main() {", "the line's text is untouched");
+    let runs = runs_of(&line1);
+    assert_eq!(runs.len(), 1, "{line1}");
+    assert_eq!(text_of(&runs[0].1), "main() {");
+    assert!(runs[0].0.starts_with("hl-l0\""), "{}", runs[0].0);
+    assert!(
+        runs[0].1.contains("<span class=\""),
+        "syntax spans survive inside the run: {}",
+        runs[0].1
+    );
+    assert!(
+        runs[0].1.contains("entity name function"),
+        "the function name keeps its syntect classes: {}",
+        runs[0].1
+    );
+    assert!(code_of(&page, 2).find("hl-l").is_none());
+}
+
+#[test_id(t4mz0sd)]
+#[tokio::test]
+async fn a_highlight_across_lines_and_an_overlapping_one_each_keep_their_words_and_lanes() {
+    let h = harness();
+    let (id, v) = rust_collection(&h, "let a = 1;\nlet b = \"x & y\";\nlet c = 3;\n").await;
+    // From "a = 1;" on line 1 (col 4) through "let b" on line 2 (end col 5).
+    assert_eq!(
+        new_highlight(&h, &id, v, (1, 2), (4, 5)).await.0,
+        StatusCode::CREATED
+    );
+    // "b = \"x" on line 2, columns 4..10: overlaps the first on "b" only.
+    assert_eq!(
+        new_highlight(&h, &id, v, (2, 2), (4, 10)).await.0,
+        StatusCode::CREATED
+    );
+    let (_, page) = send(&h.app, Method::GET, &format!("/c/{id}"), None, None).await;
+    let first: Vec<String> = runs_of(&code_of(&page, 1))
+        .iter()
+        .map(|(_, t)| text_of(t))
+        .collect();
+    assert_eq!(first, ["a = 1;"]);
+    let second = runs_of(&code_of(&page, 2));
+    let shown: Vec<(String, String)> = second
+        .iter()
+        .map(|(open, t)| (open.split('"').next().unwrap().to_string(), text_of(t)))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("hl-l0".to_string(), "let ".to_string()),
+            ("hl-l0 hl-l1".to_string(), "b".to_string()),
+            ("hl-l1".to_string(), " = \"x".to_string())
+        ],
+        "the shared word carries both lanes"
+    );
+    // A third on "let" shares those words with the first.
+    assert_eq!(
+        new_highlight(&h, &id, v, (2, 2), (0, 3)).await.0,
+        StatusCode::CREATED
+    );
+    let (_, page) = send(&h.app, Method::GET, &format!("/c/{id}"), None, None).await;
+    let both: Vec<(String, String)> = runs_of(&code_of(&page, 2))
+        .iter()
+        .map(|(open, t)| (open.split('"').next().unwrap().to_string(), text_of(t)))
+        .collect();
+    assert_eq!(both[0], ("hl-l0 hl-l2".to_string(), "let".to_string()));
+    assert_eq!(both[1], ("hl-l0".to_string(), " ".to_string()));
+    assert_eq!(both[2], ("hl-l0 hl-l1".to_string(), "b".to_string()));
+    // Line 3 is untouched.
+    assert!(!code_of(&page, 3).contains("hl-l"));
+}
+
+#[test_id(tq3p7yw)]
+#[tokio::test]
+async fn out_of_range_or_half_given_columns_answer_400() {
+    let h = harness();
+    let (id, v) = rust_collection(&h, "fn main() {}\n").await;
+    for cols in [(0, 13), (5, 2), (4, 4)] {
+        let (status, body, _) = new_highlight(&h, &id, v, (1, 1), cols).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{cols:?}: {body}");
+    }
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/c/{id}/threads"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({"version_id": v, "first_line": 1, "last_line": 1, "start_col": 2, "body": "x"})
+                .to_string(),
+        ))
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
