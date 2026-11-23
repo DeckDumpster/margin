@@ -267,14 +267,17 @@ async fn a_scratch_collection_is_served_by_scratch_alone() {
     let id = created["id"].as_str().unwrap().to_string();
     assert_eq!(
         created["url"],
-        format!("http://{DNS}:7341/c/{id}"),
+        format!("http://{DNS}:7341/c/{}", created["number"]),
         "{created}"
     );
 
     let (s, _) = send(&scratch, Method::GET, &format!("/c/{id}"), None, None).await;
     assert_eq!(s, StatusCode::OK);
     let (_, home) = send(&scratch, Method::GET, "/", None, None).await;
-    assert!(home.contains(&format!("/c/{id}")), "scratch home lacks it");
+    assert!(
+        home.contains(&format!("/c/{}", created["number"])),
+        "scratch home lacks it"
+    );
     let (_, home) = send(&production, Method::GET, "/", None, None).await;
     assert!(!home.contains(&id), "production home links it");
     let (s, _) = send(

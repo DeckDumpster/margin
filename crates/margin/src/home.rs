@@ -14,6 +14,7 @@ pub const PAGE: usize = 50;
 
 pub struct Entry {
     pub id: String,
+    pub number: i64,
     pub title: String,
     pub first_line: String,
     pub published: bool,
@@ -36,6 +37,7 @@ pub struct Home {
 
 struct Head {
     id: String,
+    number: i64,
     title: String,
     cover_note: String,
     state: State,
@@ -55,8 +57,9 @@ pub fn page(
 ) -> rusqlite::Result<Listing> {
     let (after_at, after_id) = after.unwrap_or((i64::MAX, "\u{10FFFF}"));
     let mut stmt = conn.prepare(
-        "SELECT id, title, cover_note, state, created_by, activity FROM (
+        "SELECT id, title, cover_note, state, created_by, activity, number FROM (
              SELECT c.id, c.title, c.cover_note, c.state, c.created_by,
+                    (SELECT number FROM collection_numbers WHERE collection_id = c.id) AS number,
                     COALESCE((SELECT at FROM changes WHERE collection_id = c.id
                               ORDER BY seq DESC LIMIT 1), c.updated_at) AS activity
              FROM collections c WHERE c.state != 'closed')
@@ -73,6 +76,7 @@ pub fn page(
                 state: State::parse(&r.get::<_, String>(3)?)?,
                 created_by: r.get(4)?,
                 activity: r.get(5)?,
+                number: r.get(6)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -138,6 +142,7 @@ pub fn page(
                 published: h.state == State::Published,
                 waits: tally.line(),
                 id: h.id,
+                number: h.number,
                 title: h.title,
                 activity: h.activity,
             }

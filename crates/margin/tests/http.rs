@@ -147,10 +147,7 @@ async fn the_fixture_page_shows_every_line_once_in_order() {
     let created = post(&h.app, "fixture", vec![doc("long.rs", FIXTURE)]).await;
     assert_eq!(
         created["url"],
-        format!(
-            "http://margin.test:7340/c/{}",
-            created["id"].as_str().unwrap()
-        )
+        format!("http://margin.test:7340/c/{}", created["number"])
     );
     let (status, html) = send(
         &h.app,
@@ -1331,7 +1328,7 @@ mod home {
         html
     }
 
-    /// The collection ids linked from the page, in order.
+    /// The collection keys (numbers) linked from the page, in order.
     fn links(html: &str) -> Vec<String> {
         html.split("href=\"/c/")
             .skip(1)
@@ -1347,8 +1344,21 @@ mod home {
         collection(&h, "gone1", "Already closed", "", "ada", 20).await;
         set_state(&h, "gone1", State::Closed, 30).await;
         let html = get(&h, "/").await;
-        assert_eq!(links(&html), ["open1"]);
+        assert_eq!(links(&html), ["1"]);
         assert!(!html.contains("Already closed"), "{html}");
+    }
+
+    #[test_id(t91yynw)]
+    #[tokio::test]
+    async fn an_entry_is_headed_by_its_number_and_links_to_it() {
+        let h = harness();
+        collection(&h, "opaque1", "First", "", "ada", 10).await;
+        collection(&h, "opaque2", "Second", "", "ada", 20).await;
+        let html = get(&h, "/").await;
+        assert!(html.contains("<a class=\"entry\" href=\"/c/2\">"), "{html}");
+        assert!(html.contains("#2 Second"), "{html}");
+        assert!(html.contains("#1 First"), "{html}");
+        assert!(!html.contains("opaque"), "{html}");
     }
 
     #[test_id(t4ht1bn)]
@@ -1360,7 +1370,7 @@ mod home {
         collection(&h, "c", "C", "", "ada", 30).await;
         // Created first, but the newest thing to happen is in A.
         thread(&h, "a", va, "ta", "ada", Visibility::Now, 40).await;
-        assert_eq!(links(&get(&h, "/").await), ["a", "c", "b"]);
+        assert_eq!(links(&get(&h, "/").await), ["1", "3", "2"]);
     }
 
     #[test_id(tm16817)]
@@ -1423,8 +1433,8 @@ mod home {
         let first = get(&h, "/").await;
         let ids = links(&first);
         assert_eq!(ids.len(), 50);
-        assert_eq!(ids[0], "c59");
-        assert_eq!(ids[49], "c10");
+        assert_eq!(ids[0], "60");
+        assert_eq!(ids[49], "11");
         let older = first
             .split("class=\"older\" href=\"")
             .nth(1)
@@ -1436,8 +1446,8 @@ mod home {
         let second = get(&h, &older).await;
         let rest = links(&second);
         assert_eq!(rest.len(), 10);
-        assert_eq!(rest[0], "c09");
-        assert_eq!(rest[9], "c00");
+        assert_eq!(rest[0], "10");
+        assert_eq!(rest[9], "1");
         assert!(!second.contains("class=\"older\""), "no third page");
     }
 
@@ -2179,5 +2189,102 @@ async fn the_page_header_and_the_sticky_bar_each_link_home() {
             section.contains("<a class=\"home\" href=\"/\">Margin</a>"),
             "{open}"
         );
+    }
+}
+
+#[test_id(tv2y98x)]
+#[tokio::test]
+async fn two_creations_answer_consecutive_numbers_and_read_and_list_return_them() {
+    let h = harness();
+    let a = post(&h.app, "one", vec![doc("a.rs", "a\n")]).await;
+    let b = post(&h.app, "two", vec![doc("b.rs", "b\n")]).await;
+    assert_eq!(
+        (a["number"].as_i64(), b["number"].as_i64()),
+        (Some(1), Some(2))
+    );
+    assert_eq!(b["url"], "http://margin.test:7340/c/2");
+    assert_ne!(b["id"], "2");
+    let (_, body) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{}", b["id"].as_str().unwrap()),
+        None,
+        None,
+    )
+    .await;
+    let read: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(read["number"], 2);
+    let (_, body) = send(&h.app, Method::GET, "/api/collections", None, None).await;
+    let listed: Value = serde_json::from_str(&body).unwrap();
+    let numbers: Vec<i64> = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["number"].as_i64().unwrap())
+        .collect();
+    assert_eq!(numbers.len(), 2);
+    assert!(numbers.contains(&1) && numbers.contains(&2), "{numbers:?}");
+}
+
+#[test_id(tqs1s1x)]
+#[tokio::test]
+async fn a_number_and_an_id_serve_the_same_page_and_an_unknown_number_is_404() {
+    let h = harness();
+    let c = post(&h.app, "one", vec![doc("a.rs", "a\n")]).await;
+    let id = c["id"].as_str().unwrap();
+    let (s1, by_number) = send(&h.app, Method::GET, "/c/1", None, None).await;
+    let (s2, by_id) = send(&h.app, Method::GET, &format!("/c/{id}"), None, None).await;
+    assert_eq!((s1, s2), (StatusCode::OK, StatusCode::OK));
+    assert_eq!(by_number, by_id);
+    assert!(
+        by_number.contains(&format!("data-collection=\"{id}\"")),
+        "{by_number}"
+    );
+    assert!(by_number.contains("#1 one"), "{by_number}");
+    let (s, _) = send(&h.app, Method::GET, "/c/99", None, None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[test_id(tl2wl82)]
+#[tokio::test]
+async fn deleting_the_newest_review_does_not_give_its_number_again() {
+    let h = harness();
+    post(&h.app, "one", vec![doc("a.rs", "a\n")]).await;
+    let b = post(&h.app, "two", vec![doc("b.rs", "b\n")]).await;
+    let (s, _) = send(
+        &h.app,
+        Method::DELETE,
+        &format!("/api/collections/{}", b["id"].as_str().unwrap()),
+        Some(TOKEN),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let c = post(&h.app, "three", vec![doc("c.rs", "c\n")]).await;
+    assert_eq!(c["number"], 3);
+    let (s, _) = send(&h.app, Method::GET, "/c/2", None, None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[test_id(to0d4hb)]
+#[tokio::test]
+async fn the_agent_feed_names_a_review_by_its_opaque_id() {
+    let h = harness();
+    let (id, version) = small_collection(&h, 3).await;
+    let (status, ..) = new_thread(&h, &id, version, 1, 1, "hi").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, body) = send(
+        &h.app,
+        Method::GET,
+        "/api/changes?after=0",
+        Some(TOKEN),
+        None,
+    )
+    .await;
+    let feed: Value = serde_json::from_str(&body).unwrap();
+    let changes = feed["changes"].as_array().unwrap();
+    assert!(!changes.is_empty(), "{body}");
+    for ch in changes {
+        assert_eq!(ch["collection_id"], id, "{body}");
     }
 }

@@ -20,6 +20,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0003_changes.sql"),
     include_str!("../migrations/0004_versions.sql"),
     include_str!("../migrations/0005_source.sql"),
+    include_str!("../migrations/0006_numbers.sql"),
 ];
 
 /// The `user_version` of a database this binary has fully migrated.
@@ -243,6 +244,36 @@ mod tests {
             conn.execute("UPDATE collections SET source_repository = 'x'", [])
                 .is_err(),
             "a repository without a commit is refused"
+        );
+    }
+
+    #[test_id(tslffgt)]
+    #[test]
+    fn a_version_five_database_numbers_its_collections_by_age() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for (i, sql) in MIGRATIONS.iter().take(5).enumerate() {
+            conn.execute_batch(sql).unwrap();
+            conn.pragma_update(None, "user_version", i + 1).unwrap();
+        }
+        for (id, at) in [("newer", 20), ("older", 10)] {
+            conn.execute(
+                "INSERT INTO collections (id, title, cover_note, state, created_by, created_at, updated_at)
+                 VALUES (?1, 't', '', 'open', 'a', ?2, ?2)",
+                rusqlite::params![id, at],
+            )
+            .unwrap();
+        }
+        migrate(&mut conn).unwrap();
+        let numbered: Vec<(i64, String)> = conn
+            .prepare("SELECT number, collection_id FROM collection_numbers ORDER BY number")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            numbered,
+            [(1, "older".to_string()), (2, "newer".to_string())]
         );
     }
 }
