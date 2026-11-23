@@ -267,3 +267,57 @@ pub fn delete_latest(
     tx.commit()?;
     Ok((Deleted::Gone, Some(collection_id)))
 }
+
+/// Why [`carry_between`] has no answer.
+#[derive(Debug)]
+pub enum CarryError {
+    /// A version is not in the collection, or the two are of different documents.
+    NotFound,
+    /// The anchor does not fit version `from`.
+    Anchor(margin_core::anchor::AnchorError),
+    Db(rusqlite::Error),
+}
+
+impl From<rusqlite::Error> for CarryError {
+    fn from(e: rusqlite::Error) -> Self {
+        CarryError::Db(e)
+    }
+}
+
+/// Where `anchor`, written on version `from`, sits on version `to` of the same document: the
+/// same match `add` makes, asked without writing anything.
+pub fn carry_between(
+    conn: &Connection,
+    collection_id: &str,
+    from: i64,
+    to: i64,
+    anchor: &Anchor,
+) -> Result<(Anchor, CarryState), CarryError> {
+    let text = |id: i64| -> rusqlite::Result<Option<(String, String)>> {
+        conn.query_row(
+            "SELECT v.document_id, v.text FROM versions v JOIN documents d ON d.id = v.document_id
+             WHERE v.id = ?1 AND d.collection_id = ?2",
+            params![id, collection_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+    };
+    let (Some((from_doc, old_text)), Some((to_doc, new_text))) = (text(from)?, text(to)?) else {
+        return Err(CarryError::NotFound);
+    };
+    if from_doc != to_doc {
+        return Err(CarryError::NotFound);
+    }
+    let (old, new) = (
+        margin_core::lines::split(&old_text),
+        margin_core::lines::split(&new_text),
+    );
+    let lens: Vec<u32> = old.iter().map(|l| l.chars().count() as u32).collect();
+    anchor.validate(&lens).map_err(CarryError::Anchor)?;
+    let map = carry::line_map(&old, &new);
+    Ok(match carry::carry(anchor, &map, &old, &new) {
+        Carried::Placed(a) => (a, CarryState::Placed),
+        Carried::TextChanged(a) => (a, CarryState::TextChanged),
+        Carried::Removed { at } => (Anchor::lines(at, at), CarryState::Removed),
+    })
+}
