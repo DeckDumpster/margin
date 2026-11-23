@@ -699,6 +699,17 @@ async fn six_threads_on_a_line_give_its_row_six_lanes_and_a_row_of_four_carries_
     assert_eq!(row_style(&page, 17).as_deref(), Some("--lanes:6"));
     assert_eq!(row_style(&page, 18), None);
 
+    // A lane gap: one mark on a row whose only thread sits in lane 6 gives that row 7 lanes.
+    let (id, v) = small_collection(&h, 30).await;
+    for k in 0..6 {
+        new_thread(&h, &id, v, 10, 12, &format!("low {k}")).await;
+    }
+    new_thread(&h, &id, v, 11, 30, "high").await;
+    let (_, page) = send(&h.app, Method::GET, &format!("/c/{id}"), None, None).await;
+    assert_eq!(lanes_on_line(&page, 20), [6]);
+    assert_eq!(row_style(&page, 20).as_deref(), Some("--lanes:7"));
+    assert_eq!(row_style(&page, 12).as_deref(), Some("--lanes:7"));
+
     let (id, v) = small_collection(&h, 30).await;
     for k in 0..4 {
         new_thread(&h, &id, v, 17, 17, &format!("comment {k}")).await;
