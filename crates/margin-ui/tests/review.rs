@@ -116,6 +116,43 @@ async fn a_review_is_opened_found_read_and_commented_on() {
     eval::<bool>(&page, "(document.querySelector('#bar-top').click(), true)").await;
     wait_for(&page, "the top of the page", "window.scrollY === 0").await;
 
+    // A mouse drag from a line number selects the lines it crosses at once, with no hold first.
+    let painted: u32 = eval(
+        &page,
+        "(() => { const last = document.querySelector('[data-line=\"3\"]');
+           const first = last.parentNode.querySelector('[data-line=\"1\"]');
+           const at = (row) => { const r = row.querySelector('.no').getBoundingClientRect();
+             return {bubbles: true, pointerId: 7, pointerType: 'mouse', button: 0,
+                     clientX: r.left + r.width / 2, clientY: r.top + r.height / 2}; };
+           first.querySelector('.no').dispatchEvent(new PointerEvent('pointerdown', at(first)));
+           document.dispatchEvent(new PointerEvent('pointermove', at(last)));
+           const n = last.parentNode.querySelectorAll('.sel').length;
+           document.dispatchEvent(new PointerEvent('pointerup', at(last)));
+           return n; })()",
+    )
+    .await;
+    assert_eq!(
+        painted, 3,
+        "a mouse drag over three line numbers marks three lines"
+    );
+    wait_for(
+        &page,
+        "the comment box for the dragged range",
+        "document.querySelector('.newbox textarea')",
+    )
+    .await;
+    eval::<bool>(
+        &page,
+        "(document.querySelector('.newbox [data-act=cancel]').click(), true)",
+    )
+    .await;
+    wait_for(
+        &page,
+        "the box closed",
+        "!document.querySelector('.newbox')",
+    )
+    .await;
+
     eval::<bool>(
         &page,
         "(() => { const no = document.querySelector('[data-line=\"3\"] .no');
