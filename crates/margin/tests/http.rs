@@ -2329,6 +2329,9 @@ mod code_spans {
     /// Every code span spelled here, and where each links when it does.
     fn spans() -> Vec<(&'static str, Option<String>)> {
         let blob = |tail: &str| Some(format!("{REPO}/blob/{COMMIT}/{tail}"));
+        let commit = |id: &str| Some(format!("{REPO}/commit/{id}"));
+        const FULL: &str = "0123456789abcdef0123456789abcdef01234567";
+        const TOO_LONG: &str = "0123456789abcdef0123456789abcdef012345678";
         vec![
             ("src/one.rs", Some("#doc-1".into())),
             ("two.rs", Some("#doc-2".into())),
@@ -2362,6 +2365,18 @@ mod code_spans {
             ("x/../lib.rs", None),
             ("/etc/lib.rs", None),
             ("x/Makefile", None),
+            ("Circle::solo", Some("#doc-4-4".into())),
+            ("Circle::solo()", Some("#doc-4-4".into())),
+            ("Circle::area", Some("#doc-4-3".into())),
+            ("Square::area", Some("#doc-4-12".into())),
+            ("Remote::far", Some("#doc-5-2".into())),
+            ("Circle::twice", Some("#doc-4-1".into())),
+            ("Circle::missing", Some("#doc-4-1".into())),
+            ("Dup::helper", None),
+            ("abcdef", None),
+            ("abcdef1", commit("abcdef1")),
+            (FULL, commit(FULL)),
+            (TOO_LONG, None),
         ]
     }
 
@@ -2380,6 +2395,13 @@ mod code_spans {
             ),
             doc("src/two.rs", "fn only_two() {}\nstruct Dup;\n"),
             doc("lib/one.rs", "fn lib_one() {}\n"),
+            doc(
+                "src/shapes.rs",
+                "struct Circle;\nimpl Circle {\n    fn area(&self) {}\n    fn solo(&self) {}\n    \
+                 fn twice(&self) {}\n}\nimpl Circle {\n    fn twice(&self) {}\n}\n\
+                 struct Square;\nimpl Square {\n    fn area(&self) {}\n}\nstruct Remote;\n",
+            ),
+            doc("src/remote.rs", "impl Remote {\n    fn far(&self) {}\n}\n"),
         ]
     }
 

@@ -19,10 +19,23 @@ type Cache = Mutex<HashMap<(String, i64), Arc<Parsed>>>;
 /// What one parse of a document yields: its lines as HTML, and what it defines.
 pub struct Parsed {
     pub lines: Vec<String>,
-    /// `(name, line)` of each definition the syntax marks: functions, types, modules, macros,
-    /// constants. An `impl` counts only where nothing else in the document defines its name.
-    pub definitions: Vec<(String, u32)>,
+    /// Each definition the syntax marks: functions, types, modules, macros, constants. An `impl`
+    /// counts only where nothing else in the document defines its name.
+    pub definitions: Vec<Definition>,
 }
+
+#[derive(Clone)]
+pub struct Definition {
+    pub name: String,
+    pub line: u32,
+    /// Whether the name is an `impl`'s type rather than a definition of it.
+    pub imp: bool,
+    /// For a name directly in a Rust `impl` body, the type that `impl` is for.
+    pub owner: Option<String>,
+}
+
+/// A name found on a line, before the `impl`s that name already defined are dropped.
+type Found = (String, u32, bool, Option<String>);
 
 /// The scopes that mark the name of a definition; the flag is whether it is an `impl`.
 const DEFINITION_SCOPES: [(&str, bool); 11] = [
@@ -44,6 +57,8 @@ pub struct Highlighter {
     cache: Cache,
     definition_scopes: Vec<(Scope, bool)>,
     storage_type: Scope,
+    meta_impl: Scope,
+    meta_block: Scope,
 }
 
 pub fn escape(s: &str) -> String {
@@ -85,6 +100,8 @@ impl Highlighter {
                 .map(|(s, imp)| (Scope::new(s).expect("a valid scope"), *imp))
                 .collect(),
             storage_type: Scope::new("storage.type").expect("a valid scope"),
+            meta_impl: Scope::new("meta.impl").expect("a valid scope"),
+            meta_block: Scope::new("meta.block").expect("a valid scope"),
         }
     }
 
@@ -113,7 +130,8 @@ impl Highlighter {
         let mut parse = ParseState::new(syntax);
         let mut stack = ScopeStack::new();
         let mut scan = ScopeStack::new();
-        let mut found = Vec::new();
+        let mut found: Vec<Found> = Vec::new();
+        let mut owner = None;
         let mut out = Vec::with_capacity(split.len());
         for (i, line) in LinesWithEndings::from(&crate::highlight::normalise(text, &split))
             .take(split.len())
@@ -121,7 +139,14 @@ impl Highlighter {
         {
             let rendered = (|| {
                 let ops = parse.parse_line(line, &self.syntaxes).ok()?;
-                self.scan_definitions(line, &ops, &mut scan, (i + 1) as u32, &mut found);
+                self.scan_definitions(
+                    line,
+                    &ops,
+                    &mut scan,
+                    (i + 1) as u32,
+                    &mut owner,
+                    &mut found,
+                );
                 let reopen: String = stack.as_slice().iter().map(|s| open_tag(*s)).collect();
                 let (mut html, _delta) =
                     line_tokens_to_classed_spans(line, &ops, CLASS_STYLE, &mut stack).ok()?;
@@ -139,13 +164,18 @@ impl Highlighter {
         }
         let named: std::collections::HashSet<&str> = found
             .iter()
-            .filter(|(_, _, imp)| !imp)
-            .map(|(n, _, _)| n.as_str())
+            .filter(|(_, _, imp, _)| !imp)
+            .map(|(n, ..)| n.as_str())
             .collect();
         let definitions = found
             .iter()
-            .filter(|(n, _, imp)| !imp || !named.contains(n.as_str()))
-            .map(|(n, l, _)| (n.clone(), *l))
+            .filter(|(n, _, imp, _)| !imp || !named.contains(n.as_str()))
+            .map(|(name, line, imp, owner)| Definition {
+                name: name.clone(),
+                line: *line,
+                imp: *imp,
+                owner: owner.clone(),
+            })
             .collect();
         Parsed {
             lines: out,
@@ -153,8 +183,8 @@ impl Highlighter {
         }
     }
 
-    /// Add to `found` the `(name, line, is_impl)` defined on `line`, from the scopes of its
-    /// tokens. A Rust constant is not marked as a definition: `const` or `static` is
+    /// Add to `found` the names defined on `line`, from the scopes of its tokens. `owner` is the
+    /// type of the last `impl` header seen. A Rust constant is not marked as a definition: `const` or `static` is
     /// `storage.type`, and the name follows it, then `:`.
     fn scan_definitions(
         &self,
@@ -162,15 +192,20 @@ impl Highlighter {
         ops: &[(usize, ScopeStackOp)],
         scan: &mut ScopeStack,
         n: u32,
-        found: &mut Vec<(String, u32, bool)>,
+        owner: &mut Option<String>,
+        found: &mut Vec<Found>,
     ) {
-        let mut run: Option<(String, bool)> = None;
+        let mut run: Option<(String, bool, bool)> = None;
         let mut constant_at = None;
-        let mut flush = |run: &mut Option<(String, bool)>| {
-            if let Some((name, imp)) = run.take() {
+        let mut flush = |run: &mut Option<(String, bool, bool)>, owner: &mut Option<String>| {
+            if let Some((name, imp, direct)) = run.take() {
                 let name = name.trim();
                 if is_identifier(name) {
-                    found.push((name.to_string(), n, imp));
+                    let of = if direct { owner.clone() } else { None };
+                    if imp {
+                        *owner = Some(name.to_string());
+                    }
+                    found.push((name.to_string(), n, imp, of));
                 }
             }
         };
@@ -187,12 +222,12 @@ impl Highlighter {
                         .map(|(_, imp)| *imp)
                 });
                 match (named, &mut run) {
-                    (Some(imp), Some((name, was))) if *was == imp => name.push_str(text),
+                    (Some(imp), Some((name, was, _))) if *was == imp => name.push_str(text),
                     (Some(imp), _) => {
-                        flush(&mut run);
-                        run = Some((text.to_string(), imp));
+                        flush(&mut run, owner);
+                        run = Some((text.to_string(), imp, self.directly_in_impl(scan)));
                     }
-                    (None, _) => flush(&mut run),
+                    (None, _) => flush(&mut run, owner),
                 }
                 if matches!(text.trim(), "const" | "static")
                     && scan
@@ -206,7 +241,7 @@ impl Highlighter {
             scan.apply(op).ok();
             at = off;
         }
-        flush(&mut run);
+        flush(&mut run, owner);
         if let Some(from) = constant_at {
             let rest = line[from..].trim_start();
             let rest = rest.strip_prefix("mut ").map_or(rest, str::trim_start);
@@ -215,9 +250,23 @@ impl Highlighter {
                 .unwrap_or(rest.len());
             let (name, after) = rest.split_at(name_len);
             if is_identifier(name) && after.trim_start().starts_with(':') {
-                found.push((name.to_string(), n, false));
+                let of = self.directly_in_impl(scan).then(|| owner.clone()).flatten();
+                found.push((name.to_string(), n, false, of));
             }
         }
+    }
+
+    /// Whether the scopes are inside an `impl` body and no deeper than its one block.
+    fn directly_in_impl(&self, scan: &ScopeStack) -> bool {
+        let scopes = scan.as_slice();
+        let Some(from) = scopes.iter().position(|s| self.meta_impl.is_prefix_of(*s)) else {
+            return false;
+        };
+        scopes[from..]
+            .iter()
+            .filter(|s| self.meta_block.is_prefix_of(**s))
+            .count()
+            == 1
     }
 }
 
@@ -372,7 +421,12 @@ mod tests {
     }
 
     fn defined(path: &str, text: &str) -> Vec<(String, u32)> {
-        Highlighter::new().parse(path, Kind::Code, text).definitions
+        Highlighter::new()
+            .parse(path, Kind::Code, text)
+            .definitions
+            .into_iter()
+            .map(|d| (d.name, d.line))
+            .collect()
     }
 
     fn named(pairs: &[(&str, u32)]) -> Vec<(String, u32)> {
@@ -411,6 +465,31 @@ mod tests {
         assert_eq!(
             defined("a.rs", alone),
             named(&[("S", 1), ("a", 1), ("S", 2), ("Q", 3)])
+        );
+    }
+
+    #[test_id(tfrv0me)]
+    #[test]
+    fn a_name_directly_in_an_impl_body_records_the_impls_type() {
+        let text = "impl<T> Wrap<T> {\n    fn get(&self) {\n        fn inner() {}\n    }\n}\n\
+                    impl fmt::Display for Wrap<u8> {\n    fn fmt(&self) {}\n}\nfn free() {}\n";
+        let owners: Vec<_> = Highlighter::new()
+            .parse("a.rs", Kind::Code, text)
+            .definitions
+            .into_iter()
+            .map(|d| (d.name, d.owner))
+            .collect();
+        let some = |n: &str, o: Option<&str>| (n.to_string(), o.map(str::to_string));
+        assert_eq!(
+            owners,
+            [
+                some("Wrap", None),
+                some("get", Some("Wrap")),
+                some("inner", None),
+                some("Wrap", None),
+                some("fmt", Some("Wrap")),
+                some("free", None),
+            ]
         );
     }
 
