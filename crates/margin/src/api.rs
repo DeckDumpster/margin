@@ -4,7 +4,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axum::extract::{DefaultBodyLimit, MatchedPath, Path, Query, Request, State};
+use axum::extract::{
+    DefaultBodyLimit, FromRequestParts, MatchedPath, Path, Query, RawPathParams, Request, State,
+};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
@@ -313,9 +315,45 @@ async fn create(
     Ok((StatusCode::CREATED, Json(Created { id, number, url })))
 }
 
+/// The collection a route names, whether by its long id or its short number. A key that
+/// matches neither is passed on unchanged, so the handler answers it as it always did.
+struct CollectionId(String);
+
+impl FromRequestParts<AppState> for CollectionId {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        s: &AppState,
+    ) -> Result<Self, ApiError> {
+        let params = RawPathParams::from_request_parts(parts, s)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        let key = params
+            .iter()
+            .find(|(k, _)| *k == "id")
+            .map(|(_, v)| v.to_string())
+            .ok_or_else(|| ApiError::Internal("route has no id".into()))?;
+        let k = key.clone();
+        let found = s.run(move |conn| store::resolve(conn, &k)).await?;
+        Ok(CollectionId(found.unwrap_or(key)))
+    }
+}
+
+/// The other path parameters of routes that also take a [`CollectionId`].
+#[derive(Deserialize)]
+struct ThreadKey {
+    tid: String,
+}
+
+#[derive(Deserialize)]
+struct CommentKey {
+    cid: String,
+}
+
 async fn read(
     State(s): State<AppState>,
-    Path(id): Path<String>,
+    CollectionId(id): CollectionId,
 ) -> Result<Json<store::Collection>, ApiError> {
     let found = s.run(move |conn| store::get(conn, &id)).await?;
     found.map(Json).ok_or(ApiError::NotFound)
@@ -372,7 +410,7 @@ async fn list(
 async fn update(
     State(s): State<AppState>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    CollectionId(id): CollectionId,
     body: Result<Json<Patch>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<store::Collection>, ApiError> {
     s.agent(&headers).await?;
@@ -402,7 +440,7 @@ async fn update(
 async fn remove(
     State(s): State<AppState>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    CollectionId(id): CollectionId,
 ) -> Result<StatusCode, ApiError> {
     s.agent(&headers).await?;
     if s.run(move |conn| store::delete(conn, &id)).await? {
@@ -414,16 +452,13 @@ async fn remove(
 
 async fn reader(
     State(s): State<AppState>,
-    Path(key): Path<String>,
+    CollectionId(id): CollectionId,
 ) -> Result<Html<String>, ApiError> {
     // The sequence number is read before the threads, so a change that lands in between is
     // delivered again by the feed rather than missed.
     let (seq, collection, all_threads) = s
         .run(move |conn| {
             let seq = changes::newest(conn)?;
-            let Some(id) = store::resolve(conn, &key)? else {
-                return Ok(None);
-            };
             Ok(match store::get(conn, &id)? {
                 Some(c) => Some((seq, threads::all(conn, Scope::Reader, &id)?, c)),
                 None => None,
@@ -556,7 +591,7 @@ struct NewThreadBody {
 
 async fn create_thread(
     State(s): State<AppState>,
-    Path(id): Path<String>,
+    CollectionId(id): CollectionId,
     body: Result<Json<NewThreadBody>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Response, ApiError> {
     let b = json_body(body)?;
@@ -618,7 +653,8 @@ struct BodyOnly {
 
 async fn reply(
     State(s): State<AppState>,
-    Path((id, tid)): Path<(String, String)>,
+    CollectionId(id): CollectionId,
+    Path(ThreadKey { tid }): Path<ThreadKey>,
     body: Result<Json<BodyOnly>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Response, ApiError> {
     let text = clean_body(&json_body(body)?.body)?;
@@ -646,7 +682,8 @@ async fn reply(
 
 async fn edit_comment(
     State(s): State<AppState>,
-    Path((id, cid)): Path<(String, String)>,
+    CollectionId(id): CollectionId,
+    Path(CommentKey { cid }): Path<CommentKey>,
     body: Result<Json<BodyOnly>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Response, ApiError> {
     let text = clean_body(&json_body(body)?.body)?;
@@ -665,7 +702,8 @@ async fn edit_comment(
 /// 200 with the thread when comments remain; 204 with the new marks when the thread went.
 async fn delete_comment(
     State(s): State<AppState>,
-    Path((id, cid)): Path<(String, String)>,
+    CollectionId(id): CollectionId,
+    Path(CommentKey { cid }): Path<CommentKey>,
 ) -> Result<Response, ApiError> {
     let now = s.clock.now_unix();
     let collection = id.clone();
@@ -693,7 +731,7 @@ struct ThreadListing {
 
 async fn list_threads(
     State(s): State<AppState>,
-    Path(id): Path<String>,
+    CollectionId(id): CollectionId,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<ThreadListing>, ApiError> {
     threads_listing(&s, Scope::Reader, id, q).await
@@ -777,7 +815,7 @@ fn visibility(held: bool) -> Visibility {
 async fn agent_create_thread(
     State(s): State<AppState>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    CollectionId(id): CollectionId,
     body: Result<Json<AgentThreadBody>, axum::extract::rejection::JsonRejection>,
 ) -> Result<(StatusCode, Json<Thread>), ApiError> {
     let agent = s.agent(&headers).await?;
@@ -877,7 +915,7 @@ async fn agent_thread(
 async fn agent_list_threads(
     State(s): State<AppState>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    CollectionId(id): CollectionId,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<ThreadListing>, ApiError> {
     s.agent(&headers).await?;
@@ -923,7 +961,7 @@ async fn agent_delete_comment(
 /// The reader taps Publish: every held comment of the collection appears beside his.
 async fn publish(
     State(s): State<AppState>,
-    Path(id): Path<String>,
+    CollectionId(id): CollectionId,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let now = s.clock.now_unix();
     match s.run(move |conn| threads::publish(conn, &id, now)).await? {
@@ -1088,7 +1126,7 @@ fn look(
 /// The reader page's feed of its own collection: no held comment, nor any change to one.
 async fn page_changes(
     State(s): State<AppState>,
-    Path(id): Path<String>,
+    CollectionId(id): CollectionId,
     Query(q): Query<FeedQuery>,
 ) -> Result<Json<PageFeed>, ApiError> {
     let after = q.after();
@@ -1169,7 +1207,7 @@ struct Carried {
 /// asks it to move a comment box the reader is still writing in.
 async fn carry_anchor(
     State(s): State<AppState>,
-    Path(id): Path<String>,
+    CollectionId(id): CollectionId,
     Query(q): Query<CarryQuery>,
 ) -> Result<Json<Carried>, ApiError> {
     let cols = match (q.start_col, q.end_col) {
