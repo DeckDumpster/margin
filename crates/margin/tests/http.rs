@@ -2560,3 +2560,235 @@ mod code_spans {
         );
     }
 }
+
+#[test_id(tjtkdv6)]
+#[tokio::test]
+async fn every_collection_route_takes_the_short_number_as_well_as_the_long_id() {
+    let h = harness();
+    // Number 1 is a bystander: each call below must land on number 2 and leave 1 alone.
+    let (other, _) = small_collection(&h, 3).await;
+    let (id, v) = small_collection(&h, 3).await;
+    let (_, body) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{id}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["number"], 2);
+    let n = "2";
+    let ok = |what: &'static str, status: StatusCode, want: &[StatusCode]| {
+        assert!(want.contains(&status), "{what}: {status}");
+    };
+    let threads_of = |c: String| {
+        let app = h.app.clone();
+        async move {
+            let (s, b) = send(
+                &app,
+                Method::GET,
+                &format!("/api/collections/{c}/threads"),
+                Some(TOKEN),
+                None,
+            )
+            .await;
+            assert_eq!(s, StatusCode::OK, "{b}");
+            serde_json::from_str::<Value>(&b).unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .len()
+        }
+    };
+
+    let (s, b) = send(&h.app, Method::GET, &format!("/c/{n}"), None, None).await;
+    ok("GET /c/n", s, &[StatusCode::OK]);
+    assert!(b.contains("line 1"));
+    let (s, b) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{n}"),
+        None,
+        None,
+    )
+    .await;
+    ok("GET api", s, &[StatusCode::OK]);
+    assert_eq!(
+        serde_json::from_str::<Value>(&b).unwrap()["id"],
+        id.as_str()
+    );
+
+    // Reader thread, reply, edit, delete.
+    let (s, f, _) = new_thread(&h, n, v, 1, 1, "first").await;
+    ok("POST /c/n/threads", s, &[StatusCode::CREATED]);
+    let tid = attr(&f, "data-thread");
+    let cid = attr(&f, "data-comment");
+    assert_eq!(threads_of(id.clone()).await, 1);
+    assert_eq!(threads_of(other.clone()).await, 0);
+    let (s, b) = send(&h.app, Method::GET, &format!("/c/{n}/threads"), None, None).await;
+    ok("GET /c/n/threads", s, &[StatusCode::OK]);
+    assert!(b.contains("first"), "{b}");
+    let (s, _) = send(
+        &h.app,
+        Method::POST,
+        &format!("/c/{n}/threads/{tid}/comments"),
+        None,
+        Some(json!({"body": "second"})),
+    )
+    .await;
+    ok("reply", s, &[StatusCode::CREATED]);
+    let (_, b) = send(&h.app, Method::GET, &format!("/c/{id}/threads"), None, None).await;
+    assert!(b.contains("second"), "{b}");
+    let (s, b) = send(
+        &h.app,
+        Method::PATCH,
+        &format!("/c/{n}/comments/{cid}"),
+        None,
+        Some(json!({"body": "edited"})),
+    )
+    .await;
+    ok("edit", s, &[StatusCode::OK]);
+    assert!(b.contains("edited"));
+    let (s, _) = send(
+        &h.app,
+        Method::DELETE,
+        &format!("/c/{n}/comments/{cid}"),
+        None,
+        None,
+    )
+    .await;
+    ok(
+        "delete comment",
+        s,
+        &[StatusCode::OK, StatusCode::NO_CONTENT],
+    );
+    let (_, b) = send(&h.app, Method::GET, &format!("/c/{id}/threads"), None, None).await;
+    assert!(!b.contains("edited") && b.contains("second"), "{b}");
+
+    // Agent routes.
+    let (s, b) = send(&h.app, Method::POST, &format!("/api/collections/{n}/threads"), Some(TOKEN),
+        Some(json!({"path": "a.txt", "first_line": 2, "last_line": 2, "body": "held one", "held": true}))).await;
+    ok("agent create thread", s, &[StatusCode::CREATED]);
+    assert!(b.contains("held one"), "{b}");
+    let (s, b) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{n}/threads"),
+        Some(TOKEN),
+        None,
+    )
+    .await;
+    ok("agent list threads", s, &[StatusCode::OK]);
+    assert!(b.contains("held one"), "{b}");
+    assert_eq!(threads_of(other.clone()).await, 0);
+
+    // Feeds and carry.
+    let (s, b) = send(
+        &h.app,
+        Method::GET,
+        &format!("/c/{n}/changes?after=0"),
+        None,
+        None,
+    )
+    .await;
+    ok("page changes", s, &[StatusCode::OK]);
+    assert!(b.contains(&tid), "{b}");
+    let (s, _) = send(
+        &h.app,
+        Method::GET,
+        &format!("/c/{n}/carry?from={v}&to={v}&first_line=1&last_line=1"),
+        None,
+        None,
+    )
+    .await;
+    ok("carry", s, &[StatusCode::OK]);
+
+    // Publish, update, delete.
+    let (s, b) = send(&h.app, Method::POST, &format!("/c/{n}/publish"), None, None).await;
+    ok("publish", s, &[StatusCode::OK]);
+    assert!(b.contains("published"), "{b}");
+    let (s, b) = send(
+        &h.app,
+        Method::PATCH,
+        &format!("/api/collections/{n}"),
+        Some(TOKEN),
+        Some(json!({"title": "renamed"})),
+    )
+    .await;
+    ok("update", s, &[StatusCode::OK]);
+    assert_eq!(
+        serde_json::from_str::<Value>(&b).unwrap()["id"],
+        id.as_str()
+    );
+    let (_, b) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{other}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(serde_json::from_str::<Value>(&b).unwrap()["title"], "t");
+    let (s, _) = send(
+        &h.app,
+        Method::DELETE,
+        &format!("/api/collections/{n}"),
+        Some(TOKEN),
+        None,
+    )
+    .await;
+    ok("remove", s, &[StatusCode::NO_CONTENT]);
+    let (s, _) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{id}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{other}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // Unknown numbers stay 404 on every method, and nothing is written.
+    for (m, uri) in [
+        (Method::POST, "/c/99/threads"),
+        (Method::POST, "/c/99/threads/x/comments"),
+        (Method::PATCH, "/c/99/comments/x"),
+        (Method::DELETE, "/c/99/comments/x"),
+        (Method::POST, "/c/99/publish"),
+        (Method::PATCH, "/api/collections/99"),
+        (Method::DELETE, "/api/collections/99"),
+        (Method::POST, "/api/collections/99/threads"),
+    ] {
+        let body = json!({"title": "x", "body": "x", "version_id": v, "first_line": 1, "last_line": 1, "path": "a.txt"});
+        let (s, _) = send(&h.app, m.clone(), uri, Some(TOKEN), Some(body)).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{m} {uri}");
+    }
+    let (s, _) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{other}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    // Unknown numbers stay 404.
+    for uri in [
+        "/c/99",
+        "/c/99/threads",
+        "/api/collections/99",
+        "/api/collections/99/threads",
+        "/c/99/changes?after=0",
+    ] {
+        let (s, _) = send(&h.app, Method::GET, uri, Some(TOKEN), None).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{uri}");
+    }
+}
