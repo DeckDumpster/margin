@@ -2636,6 +2636,8 @@ async fn every_collection_route_takes_the_short_number_as_well_as_the_long_id() 
     )
     .await;
     ok("reply", s, &[StatusCode::CREATED]);
+    let (_, b) = send(&h.app, Method::GET, &format!("/c/{id}/threads"), None, None).await;
+    assert!(b.contains("second"), "{b}");
     let (s, b) = send(
         &h.app,
         Method::PATCH,
@@ -2659,6 +2661,8 @@ async fn every_collection_route_takes_the_short_number_as_well_as_the_long_id() 
         s,
         &[StatusCode::OK, StatusCode::NO_CONTENT],
     );
+    let (_, b) = send(&h.app, Method::GET, &format!("/c/{id}/threads"), None, None).await;
+    assert!(!b.contains("edited") && b.contains("second"), "{b}");
 
     // Agent routes.
     let (s, b) = send(&h.app, Method::POST, &format!("/api/collections/{n}/threads"), Some(TOKEN),
@@ -2752,6 +2756,30 @@ async fn every_collection_route_takes_the_short_number_as_well_as_the_long_id() 
     .await;
     assert_eq!(s, StatusCode::OK);
 
+    // Unknown numbers stay 404 on every method, and nothing is written.
+    for (m, uri) in [
+        (Method::POST, "/c/99/threads"),
+        (Method::POST, "/c/99/threads/x/comments"),
+        (Method::PATCH, "/c/99/comments/x"),
+        (Method::DELETE, "/c/99/comments/x"),
+        (Method::POST, "/c/99/publish"),
+        (Method::PATCH, "/api/collections/99"),
+        (Method::DELETE, "/api/collections/99"),
+        (Method::POST, "/api/collections/99/threads"),
+    ] {
+        let body = json!({"title": "x", "body": "x", "version_id": v, "first_line": 1, "last_line": 1, "path": "a.txt"});
+        let (s, _) = send(&h.app, m.clone(), uri, Some(TOKEN), Some(body)).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{m} {uri}");
+    }
+    let (s, _) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{other}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
     // Unknown numbers stay 404.
     for uri in [
         "/c/99",
