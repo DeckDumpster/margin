@@ -8,7 +8,6 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 binary="${1:?usage: deploy.sh <path to the margin binary>}"
 production_port="${MARGIN_PORT:-7340}"
 scratch_port=7341
-otlp="${MARGIN_OTLP_ENDPOINT:-http://localhost:8428/opentelemetry/v1/metrics}"
 
 want="$(tr -d '[:space:]' < "$here/prod-host")"
 have="$(hostname)"
@@ -39,6 +38,8 @@ if [ -z "$ip" ] || [ -z "$dns" ] || [ "$dns" = "null" ]; then
   echo "deploy.sh: refusing: tailscale reports no address or DNS name" >&2
   exit 1
 fi
+
+otlp="http://$ip:8428/opentelemetry/v1/metrics"
 
 unit_of() { if [ "$1" = production ]; then echo margin.service; else echo "margin-$1.service"; fi; }
 

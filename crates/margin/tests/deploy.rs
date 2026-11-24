@@ -87,7 +87,7 @@ fn prepare() -> tempfile::TempDir {
         &bin,
         "tailscale",
         &format!(
-            "if [ \"$1\" = ip ]; then echo 127.0.0.1; else echo '{{\"Self\":{{\"DNSName\":\"{DNS}.\"}}}}'; fi"
+            "if [ \"$1\" = ip ]; then echo 127.0.0.2; else echo '{{\"Self\":{{\"DNSName\":\"{DNS}.\"}}}}'; fi"
         ),
     );
     stub(
@@ -124,7 +124,6 @@ fn deploy_in(root: tempfile::TempDir) -> Run {
             ),
         )
         .env_remove("MARGIN_PORT")
-        .env_remove("MARGIN_OTLP_ENDPOINT")
         .output()
         .unwrap();
     Run {
@@ -531,7 +530,7 @@ fn production_keeps_its_listen_address_base_url_database_and_agents_file() {
     let table: toml::Table = text.parse().unwrap();
     let home = run.home();
     let want = [
-        ("listen", "127.0.0.1:7340".to_string()),
+        ("listen", "127.0.0.2:7340".to_string()),
         ("base_url", format!("http://{DNS}:7340")),
         (
             "database",
@@ -543,7 +542,7 @@ fn production_keeps_its_listen_address_base_url_database_and_agents_file() {
         ),
         (
             "otlp_endpoint",
-            "http://localhost:8428/opentelemetry/v1/metrics".to_string(),
+            "http://127.0.0.2:8428/opentelemetry/v1/metrics".to_string(),
         ),
         ("instance", "production".to_string()),
     ];
