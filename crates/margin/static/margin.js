@@ -218,6 +218,7 @@
         x: e.clientX,
         y: e.clientY,
         ranging: false,
+        mouse: e.pointerType === 'mouse',
         t0: e.timeStamp,
         timer: setTimeout(beginRange, HOLD_MS),
       };
@@ -227,6 +228,7 @@
     // and past the slop is a swipe even if the hold timer has fired since.
     function movedEarly(e) {
       return (
+        !g.mouse &&
         g.ranging &&
         e.timeStamp - g.t0 < HOLD_MS &&
         (Math.abs(e.clientX - g.x0) > SLOP || Math.abs(e.clientY - g.y0) > SLOP)
@@ -244,7 +246,14 @@
       if (g.ranging) {
         setCur(lineAt(g.lines, g.x, g.y));
       } else if (Math.abs(g.x - g.x0) > SLOP || Math.abs(g.y - g.y0) > SLOP) {
-        stopGesture(); // moved before the hold: a swipe, the browser scrolls
+        if (g.mouse) {
+          // A mouse drag scrolls nothing, so it needs no hold: the range starts with the drag.
+          clearTimeout(g.timer);
+          beginRange();
+          setCur(lineAt(g.lines, g.x, g.y));
+        } else {
+          stopGesture(); // moved before the hold: a swipe, the browser scrolls
+        }
       }
     });
 
