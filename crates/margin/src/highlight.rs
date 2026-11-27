@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use margin_core::highlight::Segment;
@@ -11,10 +12,67 @@ use syntect::util::LinesWithEndings;
 
 use crate::store::Kind;
 
-/// Highlighted documents kept in memory, by (document id, version); both are immutable.
-const CACHE_ENTRIES: usize = 64;
+/// Highlighted lines kept in memory across documents; enough for the largest collection so far.
+const CACHE_LINES: usize = 60_000;
 
-type Cache = Mutex<HashMap<(String, i64), Arc<Parsed>>>;
+/// (document id, version row id); what they name is immutable.
+type Key = (String, i64);
+
+/// Parsed documents, bounded by their total lines; the least recently used goes first. A
+/// document longer than the bound is kept, alone.
+#[derive(Default)]
+struct Cache {
+    entries: HashMap<Key, Entry>,
+    lines: usize,
+    /// Counts uses, to order them.
+    uses: u64,
+}
+
+struct Entry {
+    parsed: Arc<Parsed>,
+    used: u64,
+}
+
+impl Entry {
+    /// What the entry counts against the bound: at least 1, so empty documents are bounded too.
+    fn cost(&self) -> usize {
+        self.parsed.lines.len().max(1)
+    }
+}
+
+impl Cache {
+    fn get(&mut self, key: &Key) -> Option<Arc<Parsed>> {
+        let entry = self.entries.get_mut(key)?;
+        self.uses += 1;
+        entry.used = self.uses;
+        Some(entry.parsed.clone())
+    }
+
+    fn insert(&mut self, key: Key, parsed: Arc<Parsed>) {
+        // Two requests can miss on one key and both insert it.
+        self.remove(&key);
+        self.uses += 1;
+        let entry = Entry {
+            parsed,
+            used: self.uses,
+        };
+        while self.lines + entry.cost() > CACHE_LINES {
+            let oldest = self.entries.iter().min_by_key(|(_, e)| e.used);
+            let Some(oldest) = oldest.map(|(k, _)| k.clone()) else {
+                break;
+            };
+            self.remove(&oldest);
+        }
+        self.lines += entry.cost();
+        self.entries.insert(key, entry);
+    }
+
+    fn remove(&mut self, key: &Key) {
+        if let Some(entry) = self.entries.remove(key) {
+            self.lines -= entry.cost();
+        }
+    }
+}
 
 /// What one parse of a document yields: its lines as HTML, and what it defines.
 pub struct Parsed {
@@ -54,7 +112,8 @@ const DEFINITION_SCOPES: [(&str, bool); 11] = [
 
 pub struct Highlighter {
     syntaxes: SyntaxSet,
-    cache: Cache,
+    cache: Mutex<Cache>,
+    parses: AtomicU64,
     definition_scopes: Vec<(Scope, bool)>,
     storage_type: Scope,
     meta_impl: Scope,
@@ -94,7 +153,8 @@ impl Highlighter {
     pub fn new() -> Highlighter {
         Highlighter {
             syntaxes: SyntaxSet::load_defaults_newlines(),
-            cache: Mutex::new(HashMap::new()),
+            cache: Mutex::default(),
+            parses: AtomicU64::new(0),
             definition_scopes: DEFINITION_SCOPES
                 .iter()
                 .map(|(s, imp)| (Scope::new(s).expect("a valid scope"), *imp))
@@ -111,8 +171,14 @@ impl Highlighter {
         self.parse(path, kind, text).lines
     }
 
+    /// How many documents have been parsed, cache hits excluded.
+    pub fn parses(&self) -> u64 {
+        self.parses.load(Ordering::Relaxed)
+    }
+
     /// [`Highlighter::lines`] and the document's definitions, from the one parse.
     pub fn parse(&self, path: &str, kind: Kind, text: &str) -> Parsed {
+        self.parses.fetch_add(1, Ordering::Relaxed);
         let split = margin_core::lines::split(text);
         let syntax = match kind {
             Kind::Prose => None,
@@ -304,14 +370,11 @@ impl Highlighter {
         text: &str,
     ) -> Arc<Parsed> {
         let key = (doc_id.to_string(), version);
-        if let Some(hit) = self.cache.lock().ok().and_then(|c| c.get(&key).cloned()) {
+        if let Some(hit) = self.cache.lock().ok().and_then(|mut c| c.get(&key)) {
             return hit;
         }
         let lines = Arc::new(self.parse(path, kind, text));
         if let Ok(mut c) = self.cache.lock() {
-            if c.len() >= CACHE_ENTRIES {
-                c.clear();
-            }
             c.insert(key, lines.clone());
         }
         lines
@@ -427,6 +490,53 @@ mod tests {
             .into_iter()
             .map(|d| (d.name, d.line))
             .collect()
+    }
+
+    /// Asks the cache for prose document `id` of `lines` lines; whether that took a parse.
+    fn parses_again(h: &Highlighter, id: &str, lines: usize) -> bool {
+        let before = h.parses();
+        h.parsed_cached(id, 1, "a.md", Kind::Prose, &"x\n".repeat(lines));
+        h.parses() > before
+    }
+
+    #[test_id(tpvewpz)]
+    #[test]
+    fn a_collection_the_size_of_review_002_stays_whole_in_the_cache() {
+        let h = Highlighter::new();
+        // 65 documents, 38,247 lines.
+        let sizes: Vec<usize> = (0..65).map(|d| 588 + usize::from(d < 27)).collect();
+        assert_eq!(sizes.iter().sum::<usize>(), 38_247);
+        for pass in 0..3 {
+            for (d, lines) in sizes.iter().enumerate() {
+                let parsed = parses_again(&h, &d.to_string(), *lines);
+                assert_eq!(parsed, pass == 0, "document {d}, pass {pass}");
+            }
+        }
+    }
+
+    #[test_id(tmd5u4p)]
+    #[test]
+    fn a_full_cache_evicts_the_least_recently_used_document() {
+        let h = Highlighter::new();
+        let half = CACHE_LINES / 2;
+        assert!(parses_again(&h, "a", half));
+        assert!(parses_again(&h, "b", half));
+        assert!(!parses_again(&h, "a", half), "both fit at the bound");
+        assert!(parses_again(&h, "c", 1));
+        assert!(!parses_again(&h, "a", half), "used since b was");
+        assert!(!parses_again(&h, "c", 1));
+        assert!(parses_again(&h, "b", half));
+    }
+
+    #[test_id(t265fku)]
+    #[test]
+    fn a_document_longer_than_the_bound_is_cached_alone() {
+        let h = Highlighter::new();
+        assert!(parses_again(&h, "small", 1));
+        assert!(parses_again(&h, "big", CACHE_LINES + 1));
+        assert!(!parses_again(&h, "big", CACHE_LINES + 1));
+        assert!(parses_again(&h, "small", 1));
+        assert!(parses_again(&h, "big", CACHE_LINES + 1));
     }
 
     fn named(pairs: &[(&str, u32)]) -> Vec<(String, u32)> {

@@ -42,6 +42,7 @@ impl Rng for CountingRng {
 struct Harness {
     app: Router,
     db: Db,
+    highlighter: Arc<Highlighter>,
     _dir: tempfile::TempDir,
 }
 
@@ -56,17 +57,19 @@ fn harness() -> Harness {
     ))
     .unwrap();
     let db = Db::open(&config.database).unwrap();
+    let highlighter = Arc::new(Highlighter::new());
     let state = AppState {
         db: db.clone(),
         config: Arc::new(config),
         clock: Arc::new(FixedClock(1_700_000_000)),
         rng: Arc::new(CountingRng(AtomicU64::new(1))),
         metrics: Metrics::detached(),
-        highlighter: Arc::new(Highlighter::new()),
+        highlighter: highlighter.clone(),
     };
     Harness {
         app: router(state),
         db,
+        highlighter,
         _dir: dir,
     }
 }
@@ -167,6 +170,41 @@ async fn the_fixture_page_shows_every_line_once_in_order() {
         assert_eq!(text, want, "line {n}");
     }
     assert_eq!(html.matches("data-line=").count(), 3000);
+}
+
+#[test_id(tnl30p8)]
+#[tokio::test]
+async fn reloading_a_collection_of_more_than_64_documents_parses_none_of_them_again() {
+    let h = harness();
+    let docs = (0..65)
+        .map(|d| {
+            let text: String = (0..10).map(|l| format!("fn f{d}_{l}() {{}}\n")).collect();
+            doc(&format!("d{d}.rs"), &text)
+        })
+        .collect();
+    let created = post(&h.app, "large", docs).await;
+    let uri = format!("/c/{}", created["id"].as_str().unwrap());
+    for render in ["first", "second"] {
+        let (status, html) = send(&h.app, Method::GET, &uri, None, None).await;
+        assert_eq!(status, StatusCode::OK, "{html}");
+        assert_eq!(h.highlighter.parses(), 65, "after the {render} render");
+    }
+    let id = created["id"].as_str().unwrap();
+    let (_, body) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{id}"),
+        None,
+        None,
+    )
+    .await;
+    let got: Value = serde_json::from_str(&body).unwrap();
+    let version = got["documents"][0]["version_id"].as_i64().unwrap();
+    // The thread's fragment loads the whole collection's code-span links.
+    let (status, fragment, _) = new_thread(&h, id, version, 1, 1, "see `f64_9`").await;
+    assert_eq!(status, StatusCode::CREATED, "{fragment}");
+    assert!(fragment.contains("href=\"#doc-65-10\""), "{fragment}");
+    assert_eq!(h.highlighter.parses(), 65, "after a thread's links");
 }
 
 #[test_id(t9nj3bj)]
