@@ -15,7 +15,7 @@ use crate::store::Kind;
 /// Highlighted lines kept in memory across documents; enough for the largest collection so far.
 const CACHE_LINES: usize = 60_000;
 
-/// (document id, version row id); what they name is immutable.
+/// (document id, version row id).
 type Key = (String, i64);
 
 /// Parsed documents, bounded by their total lines; the least recently used goes first. A
@@ -360,7 +360,7 @@ pub fn normalise(_text: &str, lines: &[&str]) -> String {
 }
 
 impl Highlighter {
-    /// [`Highlighter::parse`], remembered per version row (its id, never reused) so a reload costs nothing.
+    /// [`Highlighter::parse`], remembered per version row so a reload costs nothing.
     pub fn parsed_cached(
         &self,
         doc_id: &str,
@@ -537,6 +537,16 @@ mod tests {
         assert!(!parses_again(&h, "big", CACHE_LINES + 1));
         assert!(parses_again(&h, "small", 1));
         assert!(parses_again(&h, "big", CACHE_LINES + 1));
+    }
+
+    #[test_id(tvp2pfx)]
+    #[test]
+    fn inserting_a_cached_key_again_counts_its_lines_once() {
+        let mut cache = Cache::default();
+        let parsed = Arc::new(Highlighter::new().parse("a.md", Kind::Prose, "x\ny\n"));
+        cache.insert(("a".to_string(), 1), parsed.clone());
+        cache.insert(("a".to_string(), 1), parsed);
+        assert_eq!(cache.lines, 2);
     }
 
     fn named(pairs: &[(&str, u32)]) -> Vec<(String, u32)> {
