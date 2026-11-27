@@ -13,6 +13,8 @@ pub struct Config {
     pub otlp_endpoint: String,
     /// Which of the deploy's servers this is (`production`, `scratch`); labels its metrics.
     pub instance: String,
+    /// The most lines of whole documents one page of the reader shows.
+    pub page_lines: usize,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -20,6 +22,7 @@ pub enum ConfigError {
     Unparseable(String),
     Missing(&'static str),
     NotAString(&'static str),
+    NotAPositiveInteger(&'static str),
     BadListen(String),
     UnspecifiedListen(String),
 }
@@ -30,6 +33,9 @@ impl std::fmt::Display for ConfigError {
             ConfigError::Unparseable(e) => write!(f, "config is not valid TOML: {e}"),
             ConfigError::Missing(k) => write!(f, "config key `{k}` is missing"),
             ConfigError::NotAString(k) => write!(f, "config key `{k}` must be a string"),
+            ConfigError::NotAPositiveInteger(k) => {
+                write!(f, "config key `{k}` must be a positive integer")
+            }
             ConfigError::BadListen(v) => write!(f, "config key `listen` is not host:port: {v}"),
             ConfigError::UnspecifiedListen(v) => write!(
                 f,
@@ -53,12 +59,23 @@ impl Config {
                 Some(_) => Err(ConfigError::NotAString(key)),
             }
         };
+        let positive = |key: &'static str| -> Result<usize, ConfigError> {
+            match table.get(key) {
+                None => Err(ConfigError::Missing(key)),
+                Some(v) => v
+                    .as_integer()
+                    .and_then(|n| usize::try_from(n).ok())
+                    .filter(|&n| n > 0)
+                    .ok_or(ConfigError::NotAPositiveInteger(key)),
+            }
+        };
         let listen_text = get("listen")?;
         let base_url = get("base_url")?;
         let database = get("database")?;
         let agents_file = get("agents_file")?;
         let otlp_endpoint = get("otlp_endpoint")?;
         let instance = get("instance")?;
+        let page_lines = positive("page_lines")?;
         let listen: SocketAddr = listen_text
             .parse()
             .map_err(|_| ConfigError::BadListen(listen_text.clone()))?;
@@ -72,6 +89,7 @@ impl Config {
             agents_file: agents_file.into(),
             otlp_endpoint,
             instance,
+            page_lines,
         })
     }
 

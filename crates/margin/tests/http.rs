@@ -51,7 +51,7 @@ fn harness() -> Harness {
     let agents = dir.path().join("agents.toml");
     std::fs::write(&agents, format!("tester = \"{}\"\n", hash_token(TOKEN))).unwrap();
     let config = Config::parse(&format!(
-        "listen = \"127.0.0.1:0\"\nbase_url = \"http://margin.test:7340/\"\ndatabase = \"{}\"\nagents_file = \"{}\"\notlp_endpoint = \"http://127.0.0.1:1/v1/metrics\"\ninstance = \"test\"\n",
+        "listen = \"127.0.0.1:0\"\nbase_url = \"http://margin.test:7340/\"\ndatabase = \"{}\"\nagents_file = \"{}\"\notlp_endpoint = \"http://127.0.0.1:1/v1/metrics\"\ninstance = \"test\"\npage_lines = 1500\n",
         dir.path().join("m.db").display(),
         agents.display()
     ))
@@ -504,32 +504,47 @@ async fn healthz_reports_the_build_sha() {
 #[test_id(t93h820)]
 #[test]
 fn a_config_missing_a_key_is_refused_by_that_key() {
-    let full = [
-        ("listen", "127.0.0.1:7340"),
-        ("base_url", "http://margin.test"),
-        ("database", "/var/m.db"),
-        ("agents_file", "/etc/agents.toml"),
-        ("otlp_endpoint", "http://127.0.0.1:4318"),
-        ("instance", "production"),
-    ];
-    for skip in 0..full.len() {
-        let text: String = full
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != skip)
-            .map(|(_, (k, v))| format!("{k} = \"{v}\"\n"))
-            .collect();
-        let err = Config::parse(&text).unwrap_err();
+    for skip in 0..FULL_CONFIG.len() {
+        let err = Config::parse(&config_without(FULL_CONFIG[skip].0)).unwrap_err();
         assert!(
-            err.to_string().contains(&format!("`{}`", full[skip].0)),
+            err.to_string()
+                .contains(&format!("`{}`", FULL_CONFIG[skip].0)),
             "{err}"
         );
     }
-    let text: String = full
+    assert!(Config::parse(&config_without("")).is_ok());
+}
+
+/// Every key the config requires, each with a TOML value it accepts.
+const FULL_CONFIG: [(&str, &str); 7] = [
+    ("listen", "\"127.0.0.1:7340\""),
+    ("base_url", "\"http://margin.test\""),
+    ("database", "\"/var/m.db\""),
+    ("agents_file", "\"/etc/agents.toml\""),
+    ("otlp_endpoint", "\"http://127.0.0.1:4318\""),
+    ("instance", "\"production\""),
+    ("page_lines", "1500"),
+];
+
+fn config_without(key: &str) -> String {
+    FULL_CONFIG
         .iter()
-        .map(|(k, v)| format!("{k} = \"{v}\"\n"))
-        .collect();
-    assert!(Config::parse(&text).is_ok());
+        .filter(|(k, _)| *k != key)
+        .map(|(k, v)| format!("{k} = {v}\n"))
+        .collect()
+}
+
+#[test_id(tfm6xbl)]
+#[test]
+fn a_page_size_that_is_not_a_positive_integer_is_refused_by_its_key() {
+    for value in [None, Some("0"), Some("-5"), Some("1.5"), Some("\"1500\"")] {
+        let mut text = config_without("page_lines");
+        if let Some(v) = value {
+            text.push_str(&format!("page_lines = {v}\n"));
+        }
+        let err = Config::parse(&text).expect_err(&text);
+        assert!(err.to_string().contains("`page_lines`"), "{value:?}: {err}");
+    }
 }
 
 #[test_id(tsjstn2)]
@@ -537,7 +552,7 @@ fn a_config_missing_a_key_is_refused_by_that_key() {
 fn an_unspecified_listen_address_is_refused() {
     for listen in ["0.0.0.0:7340", "[::]:7340"] {
         let text = format!(
-            "listen = \"{listen}\"\nbase_url = \"http://x\"\ndatabase = \"d\"\nagents_file = \"a\"\notlp_endpoint = \"o\"\ninstance = \"test\"\n"
+            "listen = \"{listen}\"\nbase_url = \"http://x\"\ndatabase = \"d\"\nagents_file = \"a\"\notlp_endpoint = \"o\"\ninstance = \"test\"\npage_lines = 1500\n"
         );
         assert!(
             matches!(Config::parse(&text), Err(ConfigError::UnspecifiedListen(_))),
@@ -557,7 +572,7 @@ fn tiny_queue_harness() -> (
     let agents = dir.path().join("agents.toml");
     std::fs::write(&agents, "").unwrap();
     let config = Config::parse(&format!(
-        "listen = \"127.0.0.1:0\"\nbase_url = \"http://margin.test\"\ndatabase = \"{}\"\nagents_file = \"{}\"\notlp_endpoint = \"http://127.0.0.1:1\"\ninstance = \"test\"\n",
+        "listen = \"127.0.0.1:0\"\nbase_url = \"http://margin.test\"\ndatabase = \"{}\"\nagents_file = \"{}\"\notlp_endpoint = \"http://127.0.0.1:1\"\ninstance = \"test\"\npage_lines = 1500\n",
         dir.path().join("m.db").display(),
         agents.display()
     ))
@@ -691,6 +706,129 @@ fn lanes_on_line(html: &str, n: usize) -> Vec<u32> {
         .skip(1)
         .map(|c| c[..c.find('"').unwrap()].parse().unwrap())
         .collect()
+}
+
+/// The `N` of each document section on a reader page, in page order.
+fn sections(html: &str) -> Vec<usize> {
+    html.split("<section class=\"doc\" id=\"doc-")
+        .skip(1)
+        .map(|c| c[..c.find('"').unwrap()].parse().unwrap())
+        .collect()
+}
+
+/// The `href` of the pager's `rel` link, if the page has one.
+fn pager_link(html: &str, rel: &str) -> Option<String> {
+    let pager = html.split("<nav class=\"pager\"").nth(1)?;
+    let pager = pager.split("</nav>").next().unwrap();
+    let tag = pager.split(&format!("rel=\"{rel}\"")).nth(1)?;
+    Some(attr(tag.split('>').next().unwrap(), "href"))
+}
+
+#[test_id(tobd5qj)]
+#[tokio::test]
+async fn a_review_reads_in_pages_of_whole_files_and_its_file_list_reaches_every_file() {
+    let h = harness();
+    // 30 files of 500 lines, one of 5,910, then 34 of 500: with 1,500 lines to a page, ten
+    // pages of three, the long file alone, eleven pages of three and a last page of one.
+    let docs = (1..=65)
+        .map(|d| {
+            let lines = if d == 31 { 5910 } else { 500 };
+            json!({"path": format!("d{d}.md"), "kind": "prose", "text": "word\n".repeat(lines)})
+        })
+        .collect();
+    let created = post(&h.app, "paged", docs).await;
+    let id = created["id"].as_str().unwrap();
+    let (_, body) = send(
+        &h.app,
+        Method::GET,
+        &format!("/api/collections/{id}"),
+        None,
+        None,
+    )
+    .await;
+    let got: Value = serde_json::from_str(&body).unwrap();
+    let version = got["documents"][39]["version_id"].as_i64().unwrap();
+    let (status, fragment, _) = new_thread(&h, id, version, 7, 7, "on the fortieth").await;
+    assert_eq!(status, StatusCode::CREATED, "{fragment}");
+
+    let mut pages = Vec::new();
+    for k in 1..=23 {
+        let uri = format!("/c/{id}?page={k}");
+        let (status, html) = send(&h.app, Method::GET, &uri, None, None).await;
+        assert_eq!(status, StatusCode::OK, "page {k}: {html}");
+        pages.push(html);
+    }
+    for k in [0, 24] {
+        let uri = format!("/c/{id}?page={k}");
+        let (status, _) = send(&h.app, Method::GET, &uri, None, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "page {k}");
+    }
+    let (_, unnumbered) = send(&h.app, Method::GET, &format!("/c/{id}"), None, None).await;
+    assert_eq!(unnumbered, pages[0]);
+
+    let on: Vec<Vec<usize>> = pages.iter().map(|html| sections(html)).collect();
+    assert_eq!(on.concat(), (1..=65).collect::<Vec<_>>());
+    assert_eq!(on[0], [1, 2, 3]);
+    assert_eq!(on[10], [31]);
+    assert_eq!(on[22], [65]);
+    // The page that holds each document, 1-based.
+    let holds: Vec<usize> = on
+        .iter()
+        .enumerate()
+        .flat_map(|(i, docs)| docs.iter().map(move |_| i + 1))
+        .collect();
+
+    for (i, html) in pages.iter().enumerate() {
+        let k = i + 1;
+        let files = html.split("<nav class=\"files\"").nth(1).unwrap();
+        let files = files.split("</nav>").next().unwrap();
+        let links: Vec<&str> = files.split("<a ").skip(1).collect();
+        assert_eq!(links.len(), 65, "page {k}");
+        for (j, link) in links.iter().enumerate() {
+            let n = j + 1;
+            let want = if holds[j] == k {
+                format!("#doc-{n}")
+            } else {
+                format!("/c/{id}?page={}#doc-{n}", holds[j])
+            };
+            assert_eq!(attr(link, "href"), want, "page {k}, file {n}");
+            assert_eq!(attr(link, "data-doc"), n.to_string());
+            let lines = if n == 31 { 5910 } else { 500 };
+            let comments = if n == 40 { "1 comment" } else { "no comments" };
+            let summary = format!("{lines} lines · {comments}<");
+            assert!(link.contains(&summary), "page {k}, file {n}: {link}");
+        }
+        assert_eq!(
+            html.matches("on the fortieth</p>").count(),
+            usize::from(k == 14),
+            "page {k}"
+        );
+        assert_eq!(html.contains("class=\"cover\""), k == 1, "page {k}");
+        assert!(html.contains(&format!("data-page=\"{k}\" data-pages=\"23\"")));
+        let meta = html.split("<p class=\"meta\">").nth(1).unwrap();
+        let meta = meta.split("</p>").next().unwrap();
+        assert!(meta.contains("65 documents · page "), "{meta}");
+        assert!(meta.contains(&format!("page {k} of 23")), "{meta}");
+        let pager = html.find("<nav class=\"pager\"").unwrap();
+        assert!(pager > html.rfind("</section>").unwrap(), "page {k}");
+    }
+
+    let mut walked = vec![1];
+    let mut at = 0;
+    while let Some(href) = pager_link(&pages[at], "next") {
+        let first = on[at + 1][0];
+        assert_eq!(href, format!("/c/{id}?page={}#doc-{first}", at + 2));
+        at += 1;
+        walked.push(at + 1);
+    }
+    assert_eq!(walked, (1..=23).collect::<Vec<_>>());
+    while let Some(href) = pager_link(&pages[at], "prev") {
+        let last = *on[at - 1].last().unwrap();
+        assert_eq!(href, format!("/c/{id}?page={at}#doc-{last}"));
+        at -= 1;
+        walked.pop();
+    }
+    assert_eq!((at, walked), (0, vec![1]));
 }
 
 #[test_id(tmmq8fx)]

@@ -25,9 +25,11 @@ deliberately not a diff viewer, a forge or a multi-user product.
 **For the reader**
 
 - The home page lists open reviews, most recently active first.
-- A review opens as one page: a cover note (rendered markdown), a list of its files, then every
-  file whole, with line numbers and syntax colour. A bar stays at the top once you scroll, with
-  the current file and controls to jump to the top and between files.
+- A review opens a page at a time: a cover note (rendered markdown) on the first page, a list
+  of all its files, then that page's files, each whole, with line numbers and syntax colour. A
+  page holds whole files up to `page_lines` lines; a longer file has a page to itself. The list
+  opens any file, and the end of each page leads to the next. A bar stays at the top once you
+  scroll, with the current file and controls to jump to the top and between files.
 - Tap a line number to comment on that line. Press, hold and drag to comment on a range; the
   page scrolls under your finger. Select words the phone's usual way to comment on exactly
   those words.
@@ -99,7 +101,7 @@ margin serve --config margin.toml
 ```
 
 `agent-token add` writes a fresh token to `<out>` (mode 0600) and its hash to the agents file;
-neither is printed. The config has six keys:
+neither is printed. The config has seven keys:
 
 ```toml
 listen = "<address>:<port>"        # a specific address, never every interface
@@ -108,6 +110,7 @@ database = "/path/to/margin.db"
 agents_file = "/path/to/agents.toml"
 otlp_endpoint = "http://<collector>"
 instance = "prod"
+page_lines = 1500                  # the most lines of whole files one reader page shows
 ```
 
 ## Checking a change

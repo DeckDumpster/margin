@@ -7,7 +7,7 @@
 <script src="/static/margin.js"></script>
 <link rel="stylesheet" href="/static/margin.css">
 </head>
-<body data-collection="{{ id }}" data-seq="{{ seq }}">
+<body data-collection="{{ id }}" data-seq="{{ seq }}" data-page="{{ page }}" data-pages="{{ pages }}">
 <nav class="bar" aria-label="Review" hidden>
 <a class="home" href="/">Margin</a>
 <button type="button" id="bar-top" aria-label="Top">Top</button>
@@ -21,15 +21,16 @@
 <button type="button" id="wrap-toggle" aria-pressed="true">Wrap: on</button>
 <button type="button" id="publish"{% if !can_publish %} hidden{% endif %}>Publish</button>
 </header>
-<p class="meta">{{ state }} · {{ docs.len() }} document{% if docs.len() != 1 %}s{% endif %}{% if let Some(s) = source %} · <a href="{{ s.href }}">{{ s.label }}</a>{% endif %}</p>
-<nav class="files" aria-label="Files">{% for doc in docs %}<a href="#doc-{{ loop.index }}"><span class="fpath">{{ doc.path }}</span><span class="fsum">{{ doc.summary() }}</span></a>{% endfor %}</nav>
+<p class="meta">{{ state }} · {{ files.len() }} document{% if files.len() != 1 %}s{% endif %}{% if pages > 1 %} · page {{ page }} of {{ pages }}{% endif %}{% if let Some(s) = source %} · <a href="{{ s.href }}">{{ s.label }}</a>{% endif %}</p>
+<nav class="files" aria-label="Files">{% for file in files %}<a href="{{ file.href }}" data-doc="{{ file.index }}"><span class="fpath">{{ file.path }}</span><span class="fsum">{{ file.summary }}</span></a>{% endfor %}</nav>
 {% if !cover_html.is_empty() %}<section class="cover">{{ cover_html|safe }}</section>{% endif %}
-{% for doc in docs %}<section class="doc" id="doc-{{ loop.index }}">
+{% for doc in docs %}<section class="doc" id="doc-{{ doc.index }}">
 <h2 class="path">{{ doc.path }} <span class="version">version {{ doc.version }}</span></h2>
 <div class="frame"><div class="lines" style="--nw:{{ doc.digits }}" data-version="{{ doc.version_id }}">
 {% for line in doc.lines %}<div class="ln{% if line.changed %} changed{% endif %}" id="doc-{{ doc.index }}-{{ line.n }}" data-line="{{ line.n }}"{% if line.lanes > 4 %} style="--lanes:{{ line.lanes }}"{% endif %}><span class="no">{{ line.n }}</span><span class="gut">{% for m in line.marks %}<span class="mark" data-thread="{{ m.thread }}" data-lane="{{ m.lane }}" style="--lane:{{ m.lane }}"></span>{% endfor %}</span><span class="code">{{ line.html|safe }}</span></div>
 {% for thread in line.threads %}{% include "thread.html" %}{% endfor %}
 {% endfor %}</div></div>
 </section>
-{% endfor %}</body>
+{% endfor %}<nav class="pager" aria-label="Pages">{% if let Some(href) = prev %}<a rel="prev" href="{{ href }}">&#8249; Previous</a>{% endif %}<span>page {{ page }} of {{ pages }}</span>{% if let Some(href) = next %}<a rel="next" href="{{ href }}">Next &#8250;</a>{% endif %}</nav>
+</body>
 </html>

@@ -5,3 +5,4 @@ database = "@DATABASE@"
 agents_file = "@AGENTS_FILE@"
 otlp_endpoint = "@OTLP_ENDPOINT@"
 instance = "@INSTANCE@"
+page_lines = 1500
