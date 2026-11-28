@@ -1928,6 +1928,37 @@ async fn versions_are_listed_read_and_only_the_latest_beyond_one_may_be_deleted(
     );
 }
 
+#[test_id(tfbf1sr)]
+#[tokio::test]
+async fn a_version_posted_after_a_delete_never_shows_the_deleted_versions_text() {
+    let h = harness();
+    let (id, _) = small_collection(&h, 4).await;
+    let doc_id = document_id(&h, &id).await;
+    let (s, old) = post_version(&h, &doc_id, Some(TOKEN), "old words\n").await;
+    assert_eq!(s, StatusCode::CREATED, "{old}");
+    assert!(reader_page(&h, &id).await.contains("old words"));
+    let (s, _) = send(
+        &h.app,
+        Method::DELETE,
+        &format!("/api/documents/{doc_id}/versions/2"),
+        Some(TOKEN),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, new) = post_version(&h, &doc_id, Some(TOKEN), "new words\n").await;
+    assert_eq!(s, StatusCode::CREATED, "{new}");
+    assert_eq!(
+        new["id"], old["id"],
+        "the deleted row's id is given out again"
+    );
+    let html = reader_page(&h, &id).await;
+    assert!(
+        html.contains("new words") && !html.contains("old words"),
+        "{html}"
+    );
+}
+
 #[test_id(tgkts4q)]
 #[tokio::test]
 async fn a_version_with_a_thread_started_on_it_is_not_deleted() {
