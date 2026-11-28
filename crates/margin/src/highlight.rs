@@ -1,6 +1,7 @@
 //! Per-line syntax highlighting with classed spans, so colours live in the stylesheet.
 
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -15,8 +16,9 @@ use crate::store::Kind;
 /// Highlighted lines kept in memory across documents; enough for the largest collection so far.
 const CACHE_LINES: usize = 60_000;
 
-/// (document id, version row id).
-type Key = (String, i64);
+/// (document id, version row id, hash of the version's text). The row id alone is not enough: a
+/// deleted latest version's id is given to the next version.
+type Key = (String, i64, u64);
 
 /// Parsed documents, bounded by their total lines; the least recently used goes first. A
 /// document longer than the bound is kept, alone.
@@ -360,7 +362,9 @@ pub fn normalise(_text: &str, lines: &[&str]) -> String {
 }
 
 impl Highlighter {
-    /// [`Highlighter::parse`], remembered per version row so a reload costs nothing.
+    /// [`Highlighter::parse`], remembered per version row and its text so a reload costs nothing.
+    /// The text is part of the key because a deleted latest version's row id is given to the
+    /// next version.
     pub fn parsed_cached(
         &self,
         doc_id: &str,
@@ -369,7 +373,9 @@ impl Highlighter {
         kind: Kind,
         text: &str,
     ) -> Arc<Parsed> {
-        let key = (doc_id.to_string(), version);
+        let mut hasher = DefaultHasher::new();
+        text.hash(&mut hasher);
+        let key = (doc_id.to_string(), version, hasher.finish());
         if let Some(hit) = self.cache.lock().ok().and_then(|mut c| c.get(&key)) {
             return hit;
         }
@@ -544,8 +550,8 @@ mod tests {
     fn inserting_a_cached_key_again_counts_its_lines_once() {
         let mut cache = Cache::default();
         let parsed = Arc::new(Highlighter::new().parse("a.md", Kind::Prose, "x\ny\n"));
-        cache.insert(("a".to_string(), 1), parsed.clone());
-        cache.insert(("a".to_string(), 1), parsed);
+        cache.insert(("a".to_string(), 1, 0), parsed.clone());
+        cache.insert(("a".to_string(), 1, 0), parsed);
         assert_eq!(cache.lines, 2);
     }
 
