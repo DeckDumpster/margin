@@ -22,6 +22,7 @@ use crate::db::{Db, DbError};
 use crate::feed::{self, Probe};
 use crate::highlight::Highlighter;
 use crate::metrics::{Event, Metrics};
+use crate::refs::Refs;
 use crate::store::{self, NewCollection, NewDocument, Patch};
 use crate::threads::{
     self, Change, CreateError, Deleted, Mark, NewThread, Published, Scope, Thread, Visibility,
@@ -32,12 +33,12 @@ use margin_core::anchor::Anchor;
 
 /// Every non-feed route answers within this or is cut off.
 pub const REQUEST_DEADLINE: Duration = Duration::from_secs(3);
-/// The reader page, `/c/{id}`, answers within this. The rule is 3 times the measured p99 of the
-/// largest page, rounded up to 100 ms, and never above [`REQUEST_DEADLINE`], where it stands:
-/// `cargo run --release -p margin --example reader_pages` (2026-11-27, review 002's shape,
-/// 38,247 lines in 25 pages) rendered the largest page, 5,910 lines, warm in at most 22.6 ms of
-/// 20, but a first render after a restart, which parses the whole review, took up to 6.4 s of 5.
-/// So that first render is cut off; it goes on filling the cache, and a later one answers.
+/// The reader page, `/c/{id}`, answers within this. The rule is 3 times the measured cold p99 of
+/// the largest page, rounded up to 100 ms, and never above [`REQUEST_DEADLINE`], where it stands:
+/// `cargo run --release -p margin --example reader_pages` (2026-11-27, nproc 32, load average
+/// 45 to 81, review 002's shape, 38,247 lines in 25 pages) rendered the largest page, 5,910
+/// lines, in at most 1,279 ms of 20 first renders after a restart, and warm in at most 34.1 ms
+/// of 20. 3 times 1,279 ms rounds up to 3.9 s, over the cap.
 pub const READER_DEADLINE: Duration = REQUEST_DEADLINE;
 const BODY_LIMIT: usize = 16 * 1024 * 1024;
 const DEFAULT_PAGE: usize = 50;
@@ -487,25 +488,18 @@ async fn reader(
         .await?
         .map(|(seq, t, c)| (seq, c, t))
         .ok_or(ApiError::NotFound)?;
-    let highlighter = s.highlighter.clone();
     let (page_lines, page) = (s.config.page_lines, q.page.unwrap_or(1));
     let started = Instant::now();
-    let html = tokio::task::spawn_blocking(move || {
-        crate::page::render(
-            &collection,
-            &all_threads,
-            seq,
-            &highlighter,
-            page_lines,
-            page,
-        )
+    let ((html, seconds), _) = with_refs(&s, collection, move |c, highlighter, refs| {
+        let html = crate::page::render(c, &all_threads, seq, highlighter, page_lines, page, refs);
+        (html, started.elapsed())
     })
-    .await
-    .map_err(|e| ApiError::Internal(e.to_string()))?
-    .map_err(|e| ApiError::Internal(e.to_string()))?
-    .ok_or(ApiError::NotFound)?;
+    .await?;
+    let html = html
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or(ApiError::NotFound)?;
     s.metrics.push(Event::Render {
-        seconds: started.elapsed().as_secs_f64(),
+        seconds: seconds.as_secs_f64(),
     });
     Ok(Html(html))
 }
@@ -583,17 +577,47 @@ async fn fragment(
     Ok(with_marks((status, Html(html)).into_response(), marks))
 }
 
-/// What the collection's code spans can name; nothing when it is gone. Parses its documents off
-/// the event loop, which costs nothing for the ones already highlighted.
-async fn refs_of(s: &AppState, collection: &str) -> Result<crate::refs::Refs, ApiError> {
+/// Builds `c`'s [`Refs`] and runs `then` with them off the event loop, then records the
+/// definitions that took a parse, so no later request parses for them. All of it is a task of
+/// its own: a request cut off at its deadline leaves the parse running, and what it parsed is
+/// still recorded. Otherwise a review too large for the cache would never be recorded.
+async fn with_refs<T: Send + 'static>(
+    s: &AppState,
+    c: store::Collection,
+    then: impl FnOnce(&store::Collection, &Highlighter, &Refs) -> T + Send + 'static,
+) -> Result<(T, Refs), ApiError> {
+    let s = s.clone();
+    tokio::spawn(async move {
+        let highlighter = s.highlighter.clone();
+        let (out, c, refs) = tokio::task::spawn_blocking(move || {
+            let refs = Refs::new(&c, &highlighter);
+            let out = then(&c, &highlighter, &refs);
+            (out, c, refs)
+        })
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+        if refs.recorded().is_empty() {
+            return Ok((out, refs));
+        }
+        s.run(move |conn| {
+            store::record_definitions(conn, &c.documents, refs.recorded())?;
+            Ok((out, refs))
+        })
+        .await
+    })
+    .await
+    .map_err(|e| ApiError::Internal(e.to_string()))?
+}
+
+/// What the collection's code spans can name; nothing when it is gone. Parses, off the event
+/// loop, the documents whose definitions are not recorded yet, and records them.
+async fn refs_of(s: &AppState, collection: &str) -> Result<Refs, ApiError> {
     let id = collection.to_string();
     let Some(c) = s.run(move |conn| store::get(conn, &id)).await? else {
-        return Ok(crate::refs::Refs::none());
+        return Ok(Refs::none());
     };
-    let highlighter = s.highlighter.clone();
-    tokio::task::spawn_blocking(move || crate::refs::Refs::new(&c, &highlighter))
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))
+    let (_, refs) = with_refs(s, c, |_, _, _| ()).await?;
+    Ok(refs)
 }
 
 fn with_marks(mut resp: Response, marks: Option<&[Mark]>) -> Response {
@@ -1175,7 +1199,7 @@ async fn page_changes(
     .await?;
     s.feed_answered(started, &found.rows);
     let refs = if found.threads.is_empty() {
-        crate::refs::Refs::none()
+        Refs::none()
     } else {
         refs_of(&s, &id).await?
     };

@@ -755,6 +755,7 @@ mod tests {
             &Highlighter::new(),
             1500,
             1,
+            &crate::refs::Refs::none(),
         )
         .unwrap()
         .unwrap();

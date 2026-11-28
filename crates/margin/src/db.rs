@@ -21,6 +21,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0004_versions.sql"),
     include_str!("../migrations/0005_source.sql"),
     include_str!("../migrations/0006_numbers.sql"),
+    include_str!("../migrations/0007_definitions.sql"),
 ];
 
 /// The `user_version` of a database this binary has fully migrated.

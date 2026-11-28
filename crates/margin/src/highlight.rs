@@ -84,7 +84,7 @@ pub struct Parsed {
     pub definitions: Vec<Definition>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Definition {
     pub name: String,
     pub line: u32,

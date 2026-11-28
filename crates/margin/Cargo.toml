@@ -26,6 +26,8 @@ tempfile = "3"
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
 margin-test-id = { path = "../margin-test-id" }
+# A test waits for SQLite itself to report a write.
+rusqlite = { version = "0.37", features = ["bundled", "hooks"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 

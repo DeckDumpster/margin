@@ -24,6 +24,8 @@ pub struct Refs {
     types: HashMap<String, Places>,
     /// Each name defined directly in an `impl` body, by `(type, name)`.
     members: HashMap<(String, String), Vec<(usize, u32)>>,
+    /// What [`Refs::new`] had to parse for: `(version row id, definitions)`.
+    recorded: Vec<(i64, Vec<Definition>)>,
 }
 
 #[derive(Default)]
@@ -65,19 +67,33 @@ impl Place {
 }
 
 impl Refs {
-    /// Parses each document (cached) for its definitions.
+    /// Takes each document's definitions from the store, and parses (cached) only the ones
+    /// not yet recorded there.
     pub fn new(c: &Collection, highlighter: &Highlighter) -> Refs {
         let mut defined: HashMap<String, Vec<(usize, u32)>> = HashMap::new();
         let mut types: HashMap<String, Places> = HashMap::new();
         let mut members: HashMap<(String, String), Vec<(usize, u32)>> = HashMap::new();
+        let mut recorded = Vec::new();
         let docs = c
             .documents
             .iter()
             .enumerate()
             .map(|(i, d)| {
-                let parsed =
-                    highlighter.parsed_cached(&d.id, d.version_id, &d.path, d.kind, &d.text);
-                for d in &parsed.definitions {
+                let (lines, definitions) = match &d.definitions {
+                    Some(stored) => (margin_core::lines::split(&d.text).len(), stored.clone()),
+                    None => {
+                        let parsed = highlighter.parsed_cached(
+                            &d.id,
+                            d.version_id,
+                            &d.path,
+                            d.kind,
+                            &d.text,
+                        );
+                        recorded.push((d.version_id, parsed.definitions.clone()));
+                        (parsed.lines.len(), parsed.definitions.clone())
+                    }
+                };
+                for d in &definitions {
                     let at = (i + 1, d.line);
                     defined.entry(d.name.clone()).or_default().push(at);
                     let places = types.entry(d.name.clone()).or_default();
@@ -96,8 +112,8 @@ impl Refs {
                 DocRef {
                     index: i + 1,
                     path: d.path.clone(),
-                    lines: parsed.lines.len() as u32,
-                    definitions: parsed.definitions.clone(),
+                    lines: lines as u32,
+                    definitions,
                 }
             })
             .collect();
@@ -107,7 +123,13 @@ impl Refs {
             defined,
             types,
             members,
+            recorded,
         }
+    }
+
+    /// The definitions this had to parse for, which the store does not hold yet.
+    pub fn recorded(&self) -> &[(i64, Vec<Definition>)] {
+        &self.recorded
     }
 
     /// No documents, no source: nothing resolves.
@@ -118,6 +140,7 @@ impl Refs {
             defined: HashMap::new(),
             types: HashMap::new(),
             members: HashMap::new(),
+            recorded: Vec::new(),
         }
     }
 
