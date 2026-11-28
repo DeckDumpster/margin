@@ -888,8 +888,11 @@
     function prepare() {
       return fetch(url('?page=' + pageNo), { cache: 'no-store' })
         .then(function (res) {
-          // Shorter versions can leave fewer pages than this one's number: load the first.
-          if (res.status === 404 && pageNo > 1) location.replace(url(''));
+          // Shorter versions can leave fewer pages than this one's number: load the first,
+          // once no unposted text would be lost with this one. Until then the poll asks again.
+          if (res.status === 404 && pageNo > 1 && !Array.prototype.some.call(document.querySelectorAll('section.doc'), unposted)) {
+            location.replace(url(''));
+          }
           if (!res.ok) throw new Error('page answered ' + res.status);
           return res.text();
         })
@@ -1104,12 +1107,43 @@
       });
     }
 
+    // Whether a change touches a thread this page does not show, of a review with other pages.
+    function touchesElsewhere(d) {
+      if (!document.querySelector('.files a[href^="/"]')) return false;
+      return (
+        d.threads.concat(d.marks).some(function (v) {
+          return !document.querySelector('.lines[data-version="' + v.version_id + '"]');
+        }) ||
+        d.gone.some(function (id) {
+          return !document.getElementById('thread-' + id);
+        })
+      );
+    }
+
+    // Only the server knows how many comments a file on another page holds: its rows of the files
+    // list are taken from the page as it is now.
+    function recountElsewhere() {
+      return fetch(url('?page=' + pageNo), { cache: 'no-store' })
+        .then(function (res) {
+          if (!res.ok) throw new Error('page answered ' + res.status);
+          return res.text();
+        })
+        .then(function (html) {
+          var page = new DOMParser().parseFromString(html, 'text/html');
+          page.querySelectorAll('.files a[href^="/"]').forEach(function (a) {
+            var sum = document.querySelector('.files a[data-doc="' + a.getAttribute('data-doc') + '"] .fsum');
+            if (sum) sum.textContent = a.querySelector('.fsum').textContent;
+          });
+        });
+    }
+
     // Nothing on the page changes until everything it needs has arrived; a failure leaves the page
     // as it was and the poll asks again.
     function apply(d) {
       if (!d.reload) {
+        var away = touchesElsewhere(d); // asked before a gone thread leaves the page
         applyChanges(d);
-        return Promise.resolve();
+        return away ? recountElsewhere() : Promise.resolve();
       }
       return prepare().then(function (plan) {
         var held = holdFocus();
