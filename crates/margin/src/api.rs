@@ -32,6 +32,13 @@ use margin_core::anchor::Anchor;
 
 /// Every non-feed route answers within this or is cut off.
 pub const REQUEST_DEADLINE: Duration = Duration::from_secs(3);
+/// The reader page, `/c/{id}`, answers within this. The rule is 3 times the measured p99 of the
+/// largest page, rounded up to 100 ms, and never above [`REQUEST_DEADLINE`], where it stands:
+/// `cargo run --release -p margin --example reader_pages` (2026-11-27, review 002's shape,
+/// 38,247 lines in 25 pages) rendered the largest page, 5,910 lines, warm in at most 22.6 ms of
+/// 20, but a first render after a restart, which parses the whole review, took up to 6.4 s of 5.
+/// So that first render is cut off; it goes on filling the cache, and a later one answers.
+pub const READER_DEADLINE: Duration = REQUEST_DEADLINE;
 const BODY_LIMIT: usize = 16 * 1024 * 1024;
 const DEFAULT_PAGE: usize = 50;
 const MAX_PAGE: usize = 200;
@@ -74,7 +81,13 @@ pub fn router(state: AppState) -> Router {
             patch(agent_edit_comment).delete(agent_delete_comment),
         )
         .route("/", get(home))
-        .route("/c/{id}", get(reader))
+        .route(
+            "/c/{id}",
+            get(reader).layer(TimeoutLayer::with_status_code(
+                StatusCode::GATEWAY_TIMEOUT,
+                READER_DEADLINE,
+            )),
+        )
         .route("/c/{id}/publish", post(publish))
         .route("/c/{id}/threads", get(list_threads).post(create_thread))
         .route("/c/{id}/threads/{tid}/comments", post(reply))
@@ -450,9 +463,16 @@ async fn remove(
     }
 }
 
+#[derive(Deserialize)]
+struct ReaderQuery {
+    /// 1-based; the first page when absent.
+    page: Option<usize>,
+}
+
 async fn reader(
     State(s): State<AppState>,
     CollectionId(id): CollectionId,
+    Query(q): Query<ReaderQuery>,
 ) -> Result<Html<String>, ApiError> {
     // The sequence number is read before the threads, so a change that lands in between is
     // delivered again by the feed rather than missed.
@@ -468,13 +488,22 @@ async fn reader(
         .map(|(seq, t, c)| (seq, c, t))
         .ok_or(ApiError::NotFound)?;
     let highlighter = s.highlighter.clone();
+    let (page_lines, page) = (s.config.page_lines, q.page.unwrap_or(1));
     let started = Instant::now();
     let html = tokio::task::spawn_blocking(move || {
-        crate::page::render(&collection, &all_threads, seq, &highlighter)
+        crate::page::render(
+            &collection,
+            &all_threads,
+            seq,
+            &highlighter,
+            page_lines,
+            page,
+        )
     })
     .await
     .map_err(|e| ApiError::Internal(e.to_string()))?
-    .map_err(|e| ApiError::Internal(e.to_string()))?;
+    .map_err(|e| ApiError::Internal(e.to_string()))?
+    .ok_or(ApiError::NotFound)?;
     s.metrics.push(Event::Render {
         seconds: started.elapsed().as_secs_f64(),
     });

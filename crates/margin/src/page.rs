@@ -89,9 +89,17 @@ pub struct DocView {
     pub version: i64,
     pub version_id: i64,
     pub digits: usize,
-    /// Comments in the document's reader-visible threads.
-    pub comments: usize,
     pub lines: Vec<LineView>,
+}
+
+/// A row of the files list, which names every document of the review on every page.
+pub struct FileEntry {
+    /// The `N` of the document's section, `#doc-N`.
+    pub index: usize,
+    pub path: String,
+    /// `#doc-N` for a document on this page, else the page that holds it, scrolled to it.
+    pub href: String,
+    pub summary: String,
 }
 
 fn count(n: usize, one: &str, many: &str) -> String {
@@ -101,16 +109,14 @@ fn count(n: usize, one: &str, many: &str) -> String {
     }
 }
 
-impl DocView {
-    /// `235 lines · 2 comments`, as the files list shows it.
-    pub fn summary(&self) -> String {
-        let comments = if self.comments == 0 {
-            "no comments".to_string()
-        } else {
-            count(self.comments, "comment", "comments")
-        };
-        format!("{} · {comments}", count(self.lines.len(), "line", "lines"))
-    }
+/// `235 lines · 2 comments`, as the files list shows it.
+fn summary(lines: usize, comments: usize) -> String {
+    let comments = if comments == 0 {
+        "no comments".to_string()
+    } else {
+        count(comments, "comment", "comments")
+    };
+    format!("{} · {comments}", count(lines, "line", "lines"))
 }
 
 #[derive(Template)]
@@ -125,7 +131,16 @@ pub struct Page {
     pub seq: i64,
     pub cover_html: String,
     pub source: Option<SourceView>,
+    /// Every document of the review.
+    pub files: Vec<FileEntry>,
+    /// The documents on this page.
     pub docs: Vec<DocView>,
+    /// 1-based, of `pages`.
+    pub page: usize,
+    pub pages: usize,
+    /// The previous page's last document, and the next page's first.
+    pub prev: Option<String>,
+    pub next: Option<String>,
 }
 
 /// The meta line's link to the commit the review's documents came from.
@@ -182,23 +197,72 @@ fn changed_in_latest(d: &Document) -> std::collections::HashSet<u32> {
         .collect()
 }
 
+/// Where document `index` is on page `page` of collection `id`.
+fn page_href(id: &str, page: usize, index: usize) -> String {
+    format!("/c/{id}?page={page}#doc-{index}")
+}
+
+/// Page `page`, 1-based, of the review cut into pages of up to `page_lines` lines of whole
+/// documents; `None` when there is no such page. Only that page's documents are highlighted for
+/// display, though code spans resolve against every document.
+///
 /// CPU-bound (highlighting a few thousand lines); callers run it off the event loop.
 pub fn render(
     c: &Collection,
     all_threads: &[threads::Thread],
     seq: i64,
     highlighter: &Highlighter,
-) -> Result<String, askama::Error> {
-    let refs = Refs::new(c, highlighter);
-    let docs = c
+    page_lines: usize,
+    page: usize,
+) -> Result<Option<String>, askama::Error> {
+    let line_counts: Vec<usize> = c
         .documents
         .iter()
+        .map(|d| margin_core::lines::split(&d.text).len())
+        .collect();
+    let split = margin_core::pages::split(&line_counts, page_lines);
+    let Some(shown) = page.checked_sub(1).and_then(|i| split.get(i)) else {
+        return Ok(None);
+    };
+    let refs = Refs::new(c, highlighter);
+    let threads_on = |d: &Document| -> Vec<&threads::Thread> {
+        all_threads
+            .iter()
+            .filter(|t| t.version_id == d.version_id)
+            .collect()
+    };
+    // Documents are numbered across the whole review, so an anchor is the same on every page.
+    let files = split
+        .iter()
         .enumerate()
-        .map(|(n, d)| {
-            let on: Vec<&threads::Thread> = all_threads
-                .iter()
-                .filter(|t| t.version_id == d.version_id)
-                .collect();
+        .flat_map(|(p, docs)| docs.clone().map(move |n| (p + 1, n)))
+        .map(|(on_page, n)| {
+            let d = &c.documents[n];
+            FileEntry {
+                index: n + 1,
+                path: d.path.clone(),
+                href: if on_page == page {
+                    format!("#doc-{}", n + 1)
+                } else {
+                    page_href(&c.id, on_page, n + 1)
+                },
+                summary: summary(
+                    line_counts[n],
+                    threads_on(d).iter().map(|t| t.comments.len()).sum(),
+                ),
+            }
+        })
+        .collect();
+    // A neighbouring page exists only for a review of several documents, so it is never empty.
+    let prev = (page > 1).then(|| page_href(&c.id, page - 1, split[page - 2].end));
+    let next = split
+        .get(page)
+        .map(|docs| page_href(&c.id, page + 1, docs.start + 1));
+    let docs = shown
+        .clone()
+        .map(|n| {
+            let d = &c.documents[n];
+            let on = threads_on(d);
             let marks = threads::marks(&on);
             let lens: Vec<u32> = margin_core::lines::split(&d.text)
                 .iter()
@@ -240,7 +304,6 @@ pub fn render(
                 version: d.version,
                 version_id: d.version_id,
                 digits: lines.len().max(1).to_string().len(),
-                comments: on.iter().map(|t| t.comments.len()).sum(),
                 lines,
             }
         })
@@ -252,9 +315,19 @@ pub fn render(
         state: c.state.as_str(),
         can_publish: c.state != crate::store::State::Closed,
         seq,
-        cover_html: crate::markdown::html(&c.cover_note, &refs),
+        cover_html: if page == 1 {
+            crate::markdown::html(&c.cover_note, &refs)
+        } else {
+            String::new()
+        },
         source: c.source.as_ref().map(SourceView::new),
+        files,
         docs,
+        page,
+        pages: split.len(),
+        prev,
+        next,
     }
     .render()
+    .map(Some)
 }

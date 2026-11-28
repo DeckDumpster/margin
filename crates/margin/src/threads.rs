@@ -753,7 +753,10 @@ mod tests {
             &all(&conn, Scope::Reader, "col").unwrap(),
             0,
             &Highlighter::new(),
+            1500,
+            1,
         )
+        .unwrap()
         .unwrap();
         let on_page = lanes_on_line(&page, 17);
         let in_header: Vec<u32> = version_marks(&conn, "col", version_id)

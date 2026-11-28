@@ -83,7 +83,7 @@ async fn a_review_is_opened_found_read_and_commented_on() {
     wait_for(
         &page,
         "the review page",
-        "document.readyState === 'complete' && document.querySelector('#doc-2')",
+        "document.readyState === 'complete' && document.querySelector('#doc-1')",
     )
     .await;
 
@@ -107,12 +107,36 @@ async fn a_review_is_opened_found_read_and_commented_on() {
     )
     .await;
 
+    // The 3,000-line file fills the first page; the file list reaches the second file's page.
     eval::<bool>(
         &page,
-        "(document.querySelector('#doc-2').scrollIntoView(), true)",
+        "([...document.querySelectorAll('.files a')].find(a => a.textContent.includes('src/two.rs')).click(), true)",
     )
     .await;
-    wait_for(&page, "the bar naming the second file", "!document.querySelector('nav.bar').hidden && document.querySelector('#bar-file').textContent === 'two.rs'").await;
+    wait_for(
+        &page,
+        "the second page, its file below the bar",
+        "(() => { const bar = document.querySelector('nav.bar'); const doc = document.querySelector('#doc-2');
+           if (location.search !== '?page=2' || !bar || !doc || bar.hidden) return false;
+           const top = doc.getBoundingClientRect().top;
+           return top >= bar.getBoundingClientRect().bottom - 1 && top < window.innerHeight
+             && document.querySelector('#bar-file').textContent === 'two.rs'; })()",
+    )
+    .await;
+    eval::<bool>(
+        &page,
+        "(document.querySelector('.pager a[rel=prev]').click(), true)",
+    )
+    .await;
+    // The link lands on the file's section; waiting for the bar to name it means that scroll is
+    // done and cannot undo the one to the top below.
+    wait_for(
+        &page,
+        "back on the first page",
+        "location.search === '?page=1' && document.readyState === 'complete' && document.querySelector('#doc-1')
+           && !document.querySelector('nav.bar').hidden && document.querySelector('#bar-file').textContent === 'one.rs'",
+    )
+    .await;
     eval::<bool>(&page, "(document.querySelector('#bar-top').click(), true)").await;
     wait_for(&page, "the top of the page", "window.scrollY === 0").await;
 

@@ -32,6 +32,7 @@
     var MAX_SPEED = 28; // px per frame at the very edge
     var collection = document.body.getAttribute('data-collection');
     var body = document.body;
+    var pageNo = Number(body.getAttribute('data-page'));
     var g = null; // the gesture in flight
 
     // The sticky bar: shown once the heading has scrolled away; its bottom is the visible top.
@@ -63,6 +64,20 @@
       return h && h.firstChild ? h.firstChild.textContent.trim() : '';
     }
 
+    function pagerLink(rel) {
+      return document.querySelector('.pager a[rel="' + rel + '"]');
+    }
+
+    // Where a `#doc-N…` hash is, when what it names is on another page of the review: the files
+    // list's link to the page that holds document N, with this hash. Null otherwise.
+    function elsewhere(hash) {
+      var m = /^#doc-(\d+)(-\d+)?$/.exec(hash);
+      if (!m || document.getElementById(hash.slice(1))) return null;
+      var file = document.querySelector('.files a[data-doc="' + m[1] + '"]');
+      var href = file && file.getAttribute('href');
+      return href && href.charAt(0) !== '#' ? href.split('#')[0] + hash : null;
+    }
+
     function updateBar() {
       if (!bar) return;
       var header = document.querySelector('header.top');
@@ -78,8 +93,8 @@
       barFile.textContent = full.split('/').pop();
       if (full) barFile.title = full;
       else barFile.removeAttribute('title');
-      barPrev.disabled = i < 1;
-      barNext.disabled = i + 1 >= list.length;
+      barPrev.disabled = i < 1 && !pagerLink('prev');
+      barNext.disabled = i + 1 >= list.length && !pagerLink('next');
     }
 
     if (bar) {
@@ -91,7 +106,9 @@
       var jump = function (by) {
         var list = docs();
         var target = list[currentIndex(list) + by];
-        if (target) target.scrollIntoView();
+        if (target) return target.scrollIntoView();
+        var over = pagerLink(by < 0 ? 'prev' : 'next');
+        if (over) location.assign(over.getAttribute('href'));
       };
       barPrev.addEventListener('click', function () { jump(-1); });
       barNext.addEventListener('click', function () { jump(1); });
@@ -637,6 +654,18 @@
         });
     });
 
+    // A link or an address naming a file or line on another page goes to that page.
+    document.addEventListener('click', function (e) {
+      if (e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+      var a = e.target.closest('a[href^="#doc-"]');
+      var to = a && elsewhere(a.getAttribute('href'));
+      if (!to) return;
+      e.preventDefault();
+      location.assign(to);
+    });
+    var landed = elsewhere(location.hash);
+    if (landed) location.replace(landed);
+
     document.addEventListener('click', function (e) {
       var hl = e.target.closest('.hl');
       if (hl && window.getSelection().isCollapsed) {
@@ -849,10 +878,21 @@
       return { el: row, entry: entry, line: Number(row.getAttribute('data-line')) };
     }
 
+    function unposted(section) {
+      return Array.prototype.some.call(section.querySelectorAll('textarea'), function (a) {
+        return !!a.value.trim();
+      });
+    }
+
     // Everything the swap needs, fetched: the page, and where each box and the held line land.
     function prepare() {
-      return fetch(url(''), { cache: 'no-store' })
+      return fetch(url('?page=' + pageNo), { cache: 'no-store' })
         .then(function (res) {
+          // Shorter versions can leave fewer pages than this one's number: load the first,
+          // once no unposted text would be lost with this one. Until then the poll asks again.
+          if (res.status === 404 && pageNo > 1 && !Array.prototype.some.call(document.querySelectorAll('section.doc'), unposted)) {
+            location.replace(url(''));
+          }
           if (!res.ok) throw new Error('page answered ' + res.status);
           return res.text();
         })
@@ -874,7 +914,9 @@
             page: page,
             entries: entries,
             gone: Array.prototype.filter.call(document.querySelectorAll('section.doc'), function (o) {
-              return !page.getElementById(o.id);
+              // A new version can move a file to another page. Text the reader has not posted
+              // keeps its section here.
+              return !page.getElementById(o.id) && !unposted(o);
             }),
             answers: new Map(),
             hold: placeToHold(replaced),
@@ -974,6 +1016,10 @@
           return document.importNode(a, true);
         }));
       }
+      var pager = document.querySelector('.pager');
+      var fpager = page.querySelector('.pager');
+      if (pager && fpager) pager.replaceWith(document.importNode(fpager, true));
+      body.setAttribute('data-pages', page.body.getAttribute('data-pages'));
       var cover = document.querySelector('.cover');
       var fcover = page.querySelector('.cover');
       if (fcover && cover) cover.replaceChildren.apply(cover, Array.prototype.map.call(fcover.childNodes, function (n) { return document.importNode(n, true); }));
@@ -1061,12 +1107,43 @@
       });
     }
 
+    // Whether a change touches a thread this page does not show, of a review with other pages.
+    function touchesElsewhere(d) {
+      if (!document.querySelector('.files a[href^="/"]')) return false;
+      return (
+        d.threads.concat(d.marks).some(function (v) {
+          return !document.querySelector('.lines[data-version="' + v.version_id + '"]');
+        }) ||
+        d.gone.some(function (id) {
+          return !document.getElementById('thread-' + id);
+        })
+      );
+    }
+
+    // Only the server knows how many comments a file on another page holds: its rows of the files
+    // list are taken from the page as it is now.
+    function recountElsewhere() {
+      return fetch(url('?page=' + pageNo), { cache: 'no-store' })
+        .then(function (res) {
+          if (!res.ok) throw new Error('page answered ' + res.status);
+          return res.text();
+        })
+        .then(function (html) {
+          var page = new DOMParser().parseFromString(html, 'text/html');
+          page.querySelectorAll('.files a[href^="/"]').forEach(function (a) {
+            var sum = document.querySelector('.files a[data-doc="' + a.getAttribute('data-doc') + '"] .fsum');
+            if (sum) sum.textContent = a.querySelector('.fsum').textContent;
+          });
+        });
+    }
+
     // Nothing on the page changes until everything it needs has arrived; a failure leaves the page
     // as it was and the poll asks again.
     function apply(d) {
       if (!d.reload) {
+        var away = touchesElsewhere(d); // asked before a gone thread leaves the page
         applyChanges(d);
-        return Promise.resolve();
+        return away ? recountElsewhere() : Promise.resolve();
       }
       return prepare().then(function (plan) {
         var held = holdFocus();

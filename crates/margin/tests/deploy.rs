@@ -546,7 +546,9 @@ fn production_keeps_its_listen_address_base_url_database_and_agents_file() {
         ),
         ("instance", "production".to_string()),
     ];
-    assert_eq!(table.len(), want.len(), "{text}");
+    // The page size is the one number, written in the template itself.
+    assert_eq!(table.len(), want.len() + 1, "{text}");
+    assert_eq!(table["page_lines"].as_integer(), Some(1500));
     for (k, v) in want {
         assert_eq!(table[k].as_str(), Some(v.as_str()), "{k}");
     }

@@ -240,4 +240,7 @@ html:not(.nowrap) .code {
 .bar-title, .bar-file { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bar-title { font-weight: 600; }
 .bar-file { color: var(--dim); font: 0.8rem/1.25 ui-monospace, monospace; }
+/* The end of a page: where it is in the review, and the way to its neighbours. */
+.pager { display: flex; align-items: center; justify-content: center; gap: 1rem; min-height: 2.75rem; color: var(--dim); }
+.pager a { display: inline-flex; align-items: center; min-height: 2.75rem; padding: 0 0.9rem; color: var(--accent); text-decoration: none; border: 1px solid var(--rule); border-radius: 0.4rem; }
 section.doc:last-of-type { min-height: calc(100vh - var(--bar-h) - env(safe-area-inset-top, 0px)); }
