@@ -1,10 +1,15 @@
 //! What a code span in a cover note or comment names: a document, a line or definition in one, or
 //! a file of the source repository. A span that names none of them stays plain.
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
+use std::num::NonZero;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::thread;
 
-use crate::highlight::{Definition, Highlighter, is_identifier};
-use crate::store::{Collection, Source};
+use crate::highlight::{Definition, Highlighter, Parsed, is_identifier};
+use crate::store::{Collection, Document, Source};
 
 struct DocRef {
     /// The `N` of its section, `#doc-N`.
@@ -66,29 +71,72 @@ impl Place {
     }
 }
 
+/// A parse of each document whose definitions are not recorded, `None` for the others, in
+/// document order. Those not cached are parsed on one thread per core, the longest first so
+/// none of them starts last; when there are none to parse, no thread is started.
+fn parse_unrecorded(documents: &[Document], highlighter: &Highlighter) -> Vec<Option<Arc<Parsed>>> {
+    let parsed: Vec<OnceLock<Arc<Parsed>>> = documents
+        .iter()
+        .map(|d| {
+            let hit = d
+                .definitions
+                .is_none()
+                .then(|| highlighter.cached(&d.id, d.version_id, &d.text));
+            hit.flatten().map(OnceLock::from).unwrap_or_default()
+        })
+        .collect();
+    parse_missing(documents, &parsed, highlighter);
+    parsed.into_iter().map(OnceLock::into_inner).collect()
+}
+
+fn parse_missing(
+    documents: &[Document],
+    parsed: &[OnceLock<Arc<Parsed>>],
+    highlighter: &Highlighter,
+) {
+    let mut missing: Vec<usize> = (0..documents.len())
+        .filter(|&i| documents[i].definitions.is_none() && parsed[i].get().is_none())
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+    missing.sort_by_cached_key(|&i| Reverse(documents[i].text.lines().count()));
+    let next = AtomicUsize::new(0);
+    let work = || {
+        while let Some(&i) = missing.get(next.fetch_add(1, Ordering::Relaxed)) {
+            let d = &documents[i];
+            parsed[i].get_or_init(|| {
+                highlighter.parsed_cached(&d.id, d.version_id, &d.path, d.kind, &d.text)
+            });
+        }
+    };
+    let cores = thread::available_parallelism().map_or(1, NonZero::get);
+    thread::scope(|scope| {
+        for _ in 0..cores.min(missing.len()) {
+            scope.spawn(work);
+        }
+    });
+}
+
 impl Refs {
     /// Takes each document's definitions from the store, and parses (cached) only the ones
-    /// not yet recorded there.
+    /// not yet recorded there, in parallel.
     pub fn new(c: &Collection, highlighter: &Highlighter) -> Refs {
         let mut defined: HashMap<String, Vec<(usize, u32)>> = HashMap::new();
         let mut types: HashMap<String, Places> = HashMap::new();
         let mut members: HashMap<(String, String), Vec<(usize, u32)>> = HashMap::new();
         let mut recorded = Vec::new();
+        // In document order, so each name's places, and `recorded`, are too.
         let docs = c
             .documents
             .iter()
+            .zip(parse_unrecorded(&c.documents, highlighter))
             .enumerate()
-            .map(|(i, d)| {
+            .map(|(i, (d, parsed))| {
                 let (lines, definitions) = match &d.definitions {
                     Some(stored) => (margin_core::lines::split(&d.text).len(), stored.clone()),
                     None => {
-                        let parsed = highlighter.parsed_cached(
-                            &d.id,
-                            d.version_id,
-                            &d.path,
-                            d.kind,
-                            &d.text,
-                        );
+                        let parsed = parsed.expect("every unrecorded document is parsed");
                         recorded.push((d.version_id, parsed.definitions.clone()));
                         (parsed.lines.len(), parsed.definitions.clone())
                     }
@@ -284,5 +332,83 @@ impl Refs {
             "{}/blob/{}/{path}{at}",
             source.repository, source.commit
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::{Document, Kind, State};
+    use margin_test_id::test_id;
+
+    /// Documents `src/{name}.rs`, in this order.
+    fn collection(documents: &[(&str, &str)]) -> Collection {
+        Collection {
+            id: "review".to_string(),
+            number: 1,
+            title: String::new(),
+            cover_note: String::new(),
+            state: State::Open,
+            created_by: String::new(),
+            created_at: 0,
+            updated_at: 0,
+            source: None,
+            documents: documents
+                .iter()
+                .zip(1..)
+                .map(|((name, text), version_id)| Document {
+                    id: name.to_string(),
+                    version_id,
+                    path: format!("src/{name}.rs"),
+                    kind: Kind::Code,
+                    version: 1,
+                    text: text.to_string(),
+                    previous_text: None,
+                    definitions: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test_id(ttw5q3v)]
+    #[test]
+    fn names_resolve_in_document_order_whether_parsed_cached_or_recorded() {
+        // Each document is longer than the one before, so size order is not document order.
+        let mut c = collection(&[
+            ("a", "pub struct Widget;\nfn shared() {}\n"),
+            ("b", "fn only_here() {}\n\nfn shared() {}\n"),
+            ("c", "impl Widget {\n    pub fn spin(&self) {}\n}\n\n"),
+        ]);
+        let check = |c: &Collection, highlighter: &Highlighter, to_record: &[i64], pass: &str| {
+            let refs = Refs::new(c, highlighter);
+            assert_eq!(refs.defined["shared"], [(1, 2), (2, 3)], "{pass}");
+            for (span, href) in [
+                ("shared", None),
+                ("b.rs::shared", Some("#doc-2-3")),
+                ("only_here", Some("#doc-2-1")),
+                // The `impl` apart from its type is a second place for the bare name only.
+                ("Widget", None),
+                ("Widget::spin", Some("#doc-3-2")),
+                ("Widget::absent", Some("#doc-1-1")),
+                ("c.rs:4", Some("#doc-3-4")),
+                ("a.rs:4", Some("#doc-1")),
+            ] {
+                assert_eq!(refs.resolve(span).as_deref(), href, "{span}, {pass}");
+            }
+            let ids: Vec<i64> = refs.recorded().iter().map(|(id, _)| *id).collect();
+            assert_eq!(ids, to_record, "{pass}");
+            refs
+        };
+        let highlighter = Highlighter::new();
+        let b = &c.documents[1];
+        highlighter.parsed_cached(&b.id, b.version_id, &b.path, b.kind, &b.text);
+        check(&c, &highlighter, &[1, 2, 3], "partly cached");
+        let refs = check(&c, &highlighter, &[1, 2, 3], "all cached");
+        assert_eq!(highlighter.parses(), 3);
+        // The first document's definitions come from the store, the others from a parse.
+        c.documents[0].definitions = Some(refs.recorded()[0].1.clone());
+        let restarted = Highlighter::new();
+        check(&c, &restarted, &[2, 3], "partly recorded");
+        assert_eq!(restarted.parses(), 2);
     }
 }

@@ -361,7 +361,22 @@ pub fn normalise(_text: &str, lines: &[&str]) -> String {
     s
 }
 
+fn key(doc_id: &str, version: i64, text: &str) -> Key {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    (doc_id.to_string(), version, hasher.finish())
+}
+
 impl Highlighter {
+    /// What [`Highlighter::parsed_cached`] would return without parsing, if it is remembered.
+    pub(crate) fn cached(&self, doc_id: &str, version: i64, text: &str) -> Option<Arc<Parsed>> {
+        self.lookup(&key(doc_id, version, text))
+    }
+
+    fn lookup(&self, key: &Key) -> Option<Arc<Parsed>> {
+        self.cache.lock().ok()?.get(key)
+    }
+
     /// [`Highlighter::parse`], remembered per version row and its text so a reload costs nothing.
     /// The text is part of the key because a deleted latest version's row id is given to the
     /// next version.
@@ -373,12 +388,11 @@ impl Highlighter {
         kind: Kind,
         text: &str,
     ) -> Arc<Parsed> {
-        let mut hasher = DefaultHasher::new();
-        text.hash(&mut hasher);
-        let key = (doc_id.to_string(), version, hasher.finish());
-        if let Some(hit) = self.cache.lock().ok().and_then(|mut c| c.get(&key)) {
+        let key = key(doc_id, version, text);
+        if let Some(hit) = self.lookup(&key) {
             return hit;
         }
+        // The cache is not locked while parsing, so parallel misses do not wait on each other.
         let lines = Arc::new(self.parse(path, kind, text));
         if let Ok(mut c) = self.cache.lock() {
             c.insert(key, lines.clone());
