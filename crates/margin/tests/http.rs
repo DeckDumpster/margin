@@ -42,6 +42,7 @@ impl Rng for CountingRng {
 struct Harness {
     app: Router,
     db: Db,
+    config: Arc<Config>,
     highlighter: Arc<Highlighter>,
     _dir: tempfile::TempDir,
 }
@@ -57,21 +58,34 @@ fn harness() -> Harness {
     ))
     .unwrap();
     let db = Db::open(&config.database).unwrap();
+    let config = Arc::new(config);
+    let (app, highlighter) = server(&db, &config);
+    Harness {
+        app,
+        db,
+        config,
+        highlighter,
+        _dir: dir,
+    }
+}
+
+/// A router over `db` whose highlighter has parsed nothing yet.
+fn server(db: &Db, config: &Arc<Config>) -> (Router, Arc<Highlighter>) {
     let highlighter = Arc::new(Highlighter::new());
     let state = AppState {
         db: db.clone(),
-        config: Arc::new(config),
+        config: config.clone(),
         clock: Arc::new(FixedClock(1_700_000_000)),
         rng: Arc::new(CountingRng(AtomicU64::new(1))),
         metrics: Metrics::detached(),
         highlighter: highlighter.clone(),
     };
-    Harness {
-        app: router(state),
-        db,
-        highlighter,
-        _dir: dir,
-    }
+    (router(state), highlighter)
+}
+
+/// Margin restarted: the same database behind a new router and an empty highlight cache.
+fn restart(h: &mut Harness) {
+    (h.app, h.highlighter) = server(&h.db, &h.config);
 }
 
 async fn send(
@@ -205,6 +219,123 @@ async fn reloading_a_collection_of_more_than_64_documents_parses_none_of_them_ag
     assert_eq!(status, StatusCode::CREATED, "{fragment}");
     assert!(fragment.contains("href=\"#doc-65-10\""), "{fragment}");
     assert_eq!(h.highlighter.parses(), 65, "after a thread's links");
+}
+
+#[test_id(twoc0lr)]
+#[tokio::test]
+async fn the_first_page_after_a_restart_parses_only_its_own_documents_and_reads_the_same() {
+    let mut h = harness();
+    let mut counts = vec![455; 61];
+    counts.push(453);
+    for (at, large) in [(20, 5910), (35, 2067), (50, 2062)] {
+        counts.insert(at, large);
+    }
+    assert_eq!((counts.len(), counts.iter().sum()), (65, 38_247));
+    let docs: Vec<Value> = counts
+        .iter()
+        .enumerate()
+        .map(|(d, &n)| {
+            let text = numbered((0..n).map(|l| format!("fn f{d}_{l}() {{}}")));
+            doc(&format!("d{d}.rs"), &text)
+        })
+        .collect();
+    let (status, made) = send(
+        &h.app,
+        Method::POST,
+        "/api/collections",
+        Some(TOKEN),
+        Some(json!({"title": "large", "cover_note": "see `f64_9`", "documents": docs})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let made: Value = serde_json::from_str(&made).unwrap();
+    let id = made["id"].as_str().unwrap().to_string();
+    let uri = format!("/c/{id}?page=1");
+    // Parsing the whole review in a test build can outlast the router's deadline, so the first
+    // server's cache is filled outside it. The render below still records what it uses.
+    let stored =
+        h.db.call(move |conn| margin::store::get(conn, &id))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    for d in &stored.documents {
+        h.highlighter
+            .parsed_cached(&d.id, d.version_id, &d.path, d.kind, &d.text);
+    }
+    let (status, before) = send(&h.app, Method::GET, &uri, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{before}");
+    assert!(before.contains("<a href=\"#doc-65-10\"><code>f64_9</code></a>"));
+
+    restart(&mut h);
+    let (status, after) = send(&h.app, Method::GET, &uri, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{after}");
+    let on_page_1 = margin_core::pages::split(&counts, 1500)[0].len();
+    assert_eq!(h.highlighter.parses(), on_page_1 as u64);
+    assert!(before == after, "the page differs after the restart");
+}
+
+/// (version row id, name) of every definition the store holds.
+async fn stored_definitions(db: &Db) -> Vec<(i64, String)> {
+    db.call(|conn| {
+        conn.prepare("SELECT version_id, name FROM definitions ORDER BY version_id, position")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+    })
+    .await
+    .unwrap()
+    .unwrap()
+}
+
+#[test_id(txexfqj)]
+#[tokio::test]
+async fn deleting_a_version_drops_its_recorded_definitions_and_its_names_stop_linking() {
+    let mut h = harness();
+    let (status, made) = send(
+        &h.app,
+        Method::POST,
+        "/api/collections",
+        Some(TOKEN),
+        Some(json!({
+            "title": "t",
+            "cover_note": "`kept` and `dropped`",
+            "documents": [doc("a.rs", "fn kept() {}\n")],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let made: Value = serde_json::from_str(&made).unwrap();
+    let id = made["id"].as_str().unwrap().to_string();
+    let doc_id = document_id(&h, &id).await;
+    // Version 1 is not read before version 2 replaces it, so only version 2 is recorded.
+    let (status, second) = post_version(&h, &doc_id, Some(TOKEN), "fn dropped() {}\n").await;
+    assert_eq!(status, StatusCode::CREATED, "{second}");
+    let page = reader_page(&h, &id).await;
+    assert!(page.contains("<code>dropped</code></a>"), "{page}");
+    let second = second["id"].as_i64().unwrap();
+    assert_eq!(
+        stored_definitions(&h.db).await,
+        [(second, "dropped".to_string())]
+    );
+
+    let uri = format!("/api/documents/{doc_id}/versions/2");
+    let (status, _) = send(&h.app, Method::DELETE, &uri, Some(TOKEN), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(stored_definitions(&h.db).await, []);
+
+    restart(&mut h);
+    let page = reader_page(&h, &id).await;
+    assert!(page.contains("<code>kept</code></a>"), "{page}");
+    assert!(
+        page.contains("<code>dropped</code>") && !page.contains("<code>dropped</code></a>"),
+        "{page}"
+    );
+    let names: Vec<String> = stored_definitions(&h.db)
+        .await
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect();
+    assert_eq!(names, ["kept"]);
 }
 
 #[test_id(t9nj3bj)]
@@ -2998,4 +3129,173 @@ async fn every_collection_route_takes_the_short_number_as_well_as_the_long_id() 
         let (s, _) = send(&h.app, Method::GET, uri, Some(TOKEN), None).await;
         assert_eq!(s, StatusCode::NOT_FOUND, "{uri}");
     }
+}
+
+/// What [`record_definitions`] will and will not write, on the real schema.
+mod recording {
+    use margin::highlight::Definition;
+    use margin::store::{Kind, NewCollection, NewDocument, create, get, record_definitions};
+    use rusqlite::Connection;
+
+    use super::*;
+
+    fn one_document() -> Connection {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        margin::db::migrate(&mut conn).unwrap();
+        let document = NewDocument {
+            path: "a.rs".into(),
+            kind: Kind::Code,
+            text: "fn old() {}\n".into(),
+        };
+        create(
+            &mut conn,
+            &NewCollection {
+                id: "c",
+                title: "t",
+                cover_note: "",
+                created_by: "a",
+                now: 1,
+                source: None,
+                documents: &[("d".to_string(), document)],
+            },
+        )
+        .unwrap();
+        conn
+    }
+
+    fn definition(name: &str) -> Definition {
+        Definition {
+            name: name.into(),
+            line: 1,
+            imp: false,
+            owner: None,
+        }
+    }
+
+    fn names(conn: &Connection) -> Option<Vec<String>> {
+        let c = get(conn, "c").unwrap().unwrap();
+        let definitions = c.documents[0].definitions.as_ref()?;
+        Some(definitions.iter().map(|d| d.name.clone()).collect())
+    }
+
+    #[test_id(t89jxsh)]
+    #[test]
+    fn two_readers_of_an_unrecorded_version_record_it_once_in_parse_order() {
+        let mut conn = one_document();
+        assert_eq!(names(&conn), None);
+        let read = get(&conn, "c").unwrap().unwrap().documents;
+        let parsed = [(read[0].version_id, vec![definition("z"), definition("a")])];
+        record_definitions(&mut conn, &read, &parsed).unwrap();
+        record_definitions(&mut conn, &read, &parsed).unwrap();
+        assert_eq!(names(&conn).unwrap(), ["z", "a"]);
+    }
+
+    #[test_id(tzo1btv)]
+    #[test]
+    fn a_version_that_defines_nothing_is_recorded_as_such() {
+        let mut conn = one_document();
+        let read = get(&conn, "c").unwrap().unwrap().documents;
+        record_definitions(&mut conn, &read, &[(read[0].version_id, Vec::new())]).unwrap();
+        assert_eq!(names(&conn).unwrap(), Vec::<String>::new());
+    }
+
+    #[test_id(tmhlynq)]
+    #[test]
+    fn definitions_of_a_version_deleted_during_the_parse_are_not_given_to_its_reused_id() {
+        let mut conn = one_document();
+        margin::versions::add(&mut conn, "d", "fn deleted() {}\n", 2).unwrap();
+        let read = get(&conn, "c").unwrap().unwrap().documents;
+        let parsed = [(read[0].version_id, vec![definition("deleted")])];
+        margin::versions::delete_latest(&mut conn, "d", 2, 3).unwrap();
+        // Gone: nothing to record, and no error.
+        record_definitions(&mut conn, &read, &parsed).unwrap();
+        margin::versions::add(&mut conn, "d", "fn new() {}\n", 4).unwrap();
+        let now = get(&conn, "c").unwrap().unwrap().documents;
+        assert_eq!(now[0].version_id, read[0].version_id, "the id is reused");
+        record_definitions(&mut conn, &read, &parsed).unwrap();
+        assert_eq!(names(&conn), None);
+    }
+}
+
+/// A definition insert the store refuses.
+async fn refuse_definitions(db: &Db) {
+    db.call(|conn| {
+        conn.execute_batch(
+            "CREATE TRIGGER refuse BEFORE INSERT ON definitions
+             BEGIN SELECT RAISE(ABORT, 'refused'); END",
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap();
+}
+
+#[test_id(tvs64zv)]
+#[tokio::test]
+async fn a_thread_fragment_records_the_definitions_it_had_to_parse_for() {
+    let h = harness();
+    let (id, version) = rust_collection(&h, "fn named() {}\n").await;
+    assert_eq!(stored_definitions(&h.db).await, []);
+    let (status, fragment, _) = new_thread(&h, &id, version, 1, 1, "see `named`").await;
+    assert_eq!(status, StatusCode::CREATED, "{fragment}");
+    assert_eq!(
+        stored_definitions(&h.db).await,
+        [(version, "named".to_string())]
+    );
+}
+
+#[test_id(tfs5tne)]
+#[tokio::test]
+async fn definitions_that_cannot_be_recorded_fail_the_page_and_the_thread_fragment() {
+    let h = harness();
+    let (id, version) = rust_collection(&h, "fn named() {}\n").await;
+    refuse_definitions(&h.db).await;
+    let (status, body) = send(&h.app, Method::GET, &format!("/c/{id}"), None, None).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    let (status, body, _) = new_thread(&h, &id, version, 1, 1, "see `named`").await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+}
+
+#[test_id(t768kjd)]
+#[tokio::test]
+async fn a_page_request_dropped_during_the_parse_still_records_the_definitions() {
+    let h = harness();
+    let (id, _) = rust_collection(&h, FIXTURE).await;
+    // One worker, so the test can hold back the write and hear SQLite make it.
+    let db = Db::open_with(&h.config.database, 1, 4).unwrap();
+    let (written_tx, written) = std::sync::mpsc::channel();
+    db.call(move |conn| {
+        conn.update_hook(Some(move |_, _: &str, table: &str, _| {
+            if table == "definitions" {
+                let _ = written_tx.send(());
+            }
+        }))
+    })
+    .await
+    .unwrap();
+    let (app, highlighter) = server(&db, &h.config);
+    let uri = format!("/c/{id}");
+    let mut request = Box::pin(send(&app, Method::GET, &uri, None, None));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    while highlighter.parses() == 0 {
+        assert!(std::future::Future::poll(request.as_mut(), &mut cx).is_pending());
+        tokio::task::yield_now().await;
+    }
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let (parked_tx, parked) = std::sync::mpsc::channel::<()>();
+    let mut park = Box::pin(db.call(move |_| {
+        parked_tx.send(()).unwrap();
+        released.recv().unwrap();
+    }));
+    assert!(std::future::Future::poll(park.as_mut(), &mut cx).is_pending());
+    parked.recv().unwrap();
+    drop(request);
+    release.send(()).unwrap();
+    park.await.unwrap();
+    // The bound only turns a write that never comes into a failure rather than a hang.
+    tokio::task::spawn_blocking(move || written.recv_timeout(std::time::Duration::from_secs(60)))
+        .await
+        .unwrap()
+        .expect("the dropped request's definitions are written");
 }

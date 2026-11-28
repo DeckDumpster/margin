@@ -3,10 +3,11 @@
 //!
 //! `cargo run --release -p margin --example reader_pages`
 //!
-//! Warm times render every page 20 times on one server whose cache already holds the review.
-//! Cold times are a page's first render on a fresh router and `Highlighter`, which parses the
-//! whole review for its code-span links, as after a restart. The router cuts a render off at its
-//! deadline, so the cold renders are timed again by calling `page::render` itself.
+//! Warm times render every page 20 times on one server whose cache already holds the review;
+//! the first of them records every version's definitions in the store. Cold times are a page's
+//! first render on a fresh router and `Highlighter` over that store: a restart, which parses
+//! only the page's own documents. The router cuts a render off at its deadline, so the cold
+//! renders are timed again by calling `Refs::new` and `page::render` themselves.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -21,7 +22,8 @@ use margin::config::Config;
 use margin::db::Db;
 use margin::highlight::Highlighter;
 use margin::metrics::Metrics;
-use margin::store::{Kind, NewCollection, NewDocument};
+use margin::refs::Refs;
+use margin::store::{Collection, Kind, NewCollection, NewDocument};
 use margin_core::SystemClock;
 use tower::ServiceExt;
 
@@ -29,9 +31,10 @@ use tower::ServiceExt;
 const SOURCE: &str = include_str!("../../margin-ui/fixtures/long.rs");
 const PAGE_LINES: usize = 1500;
 const WARM: usize = 20;
-const COLD: usize = 5;
+/// Of 20 runs, the p99 is the slowest.
+const COLD: usize = 20;
 /// Longer than the renders the cold runs leave behind take to finish.
-const SETTLE: Duration = Duration::from_secs(30);
+const SETTLE: Duration = Duration::from_secs(5);
 
 /// The documents' line counts: the three largest of review 002 among 62 that share the rest.
 fn shape() -> Vec<usize> {
@@ -150,16 +153,19 @@ async fn main() {
         pages.len()
     );
 
-    let collection = db
-        .call(|conn| margin::store::get(conn, "review"))
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
+    let load = async || {
+        db.call(|conn| margin::store::get(conn, "review"))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+    };
+    let unrecorded = load().await;
     // A render with no router around it: no deadline cuts it off.
-    let uncut = |highlighter: &Highlighter, page: usize| {
+    let uncut = |collection: &Collection, highlighter: &Highlighter, page: usize| {
         let started = Instant::now();
-        margin::page::render(&collection, &[], 0, highlighter, PAGE_LINES, page)
+        let refs = Refs::new(collection, highlighter);
+        margin::page::render(collection, &[], 0, highlighter, PAGE_LINES, page, &refs)
             .unwrap()
             .unwrap();
         (started.elapsed(), StatusCode::OK)
@@ -167,7 +173,8 @@ async fn main() {
 
     println!("warm, {WARM} renders a page:");
     let highlighter = Arc::new(Highlighter::new());
-    uncut(&highlighter, 1);
+    // Fills the cache outside any deadline; the router's first render then records.
+    uncut(&unrecorded, &highlighter, 1);
     let app = server(&db, &config, highlighter);
     for (i, n) in lines.iter().enumerate() {
         let mut runs = Vec::new();
@@ -176,6 +183,12 @@ async fn main() {
         }
         println!("  page {:2}  {n:5} lines  {}", i + 1, report(runs));
     }
+
+    let recorded = load().await;
+    assert!(
+        recorded.documents.iter().all(|d| d.definitions.is_some()),
+        "the first render through the router recorded every version"
+    );
 
     println!("cold, {COLD} first renders, each on a fresh router and highlighter:");
     for page in [1, largest] {
@@ -196,7 +209,7 @@ async fn main() {
     println!("cold, the same renders with no deadline:");
     for page in [1, largest] {
         let runs = (0..COLD)
-            .map(|_| uncut(&Highlighter::new(), page))
+            .map(|_| uncut(&recorded, &Highlighter::new(), page))
             .collect();
         println!(
             "  page {page:2}  {:5} lines  {}",

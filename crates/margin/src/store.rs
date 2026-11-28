@@ -1,8 +1,12 @@
 //! Collections, documents and versions, as plain functions over a connection.
 //! These run on a [`crate::db::Db`] worker thread.
 
+use std::collections::HashMap;
+
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+
+use crate::highlight::Definition;
 
 fn unknown(what: &str, value: &str) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(
@@ -79,6 +83,10 @@ pub struct Document {
     /// The text of version `version - 1`, for marking what changed; not part of the API.
     #[serde(skip)]
     pub previous_text: Option<String>,
+    /// What this version defines, as [`record_definitions`] stored it; `None` when it has not
+    /// been recorded. Not part of the API.
+    #[serde(skip)]
+    pub definitions: Option<Vec<Definition>>,
 }
 
 /// Where a review's documents came from: a repository's web URL and a commit in it.
@@ -263,7 +271,8 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<Collection>> 
     let Some(mut c) = head else { return Ok(None) };
     let mut stmt = conn.prepare(
         "SELECT d.id, d.path, d.kind, v.number, v.text, v.id,
-                (SELECT p.text FROM versions p WHERE p.document_id = d.id AND p.number = v.number - 1)
+                (SELECT p.text FROM versions p WHERE p.document_id = d.id AND p.number = v.number - 1),
+                v.definitions_recorded
          FROM documents d
          JOIN versions v ON v.document_id = d.id
               AND v.number = (SELECT MAX(number) FROM versions WHERE document_id = d.id)
@@ -280,10 +289,84 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<Collection>> 
                 text: r.get(4)?,
                 version_id: r.get(5)?,
                 previous_text: r.get(6)?,
+                definitions: r.get::<_, bool>(7)?.then(Vec::new),
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
+    fill_definitions(conn, &mut c)?;
     Ok(Some(c))
+}
+
+/// The recorded definitions of each of the collection's documents that has them.
+fn fill_definitions(conn: &Connection, c: &mut Collection) -> rusqlite::Result<()> {
+    let mut wanted: HashMap<i64, &mut Vec<Definition>> = c
+        .documents
+        .iter_mut()
+        .filter_map(|d| Some((d.version_id, d.definitions.as_mut()?)))
+        .collect();
+    let mut stmt = conn.prepare(
+        "SELECT f.version_id, f.name, f.line, f.imp, f.owner
+         FROM documents d
+         JOIN versions v ON v.document_id = d.id
+              AND v.number = (SELECT MAX(number) FROM versions WHERE document_id = d.id)
+         JOIN definitions f ON f.version_id = v.id
+         WHERE d.collection_id = ?1
+         ORDER BY f.version_id, f.position",
+    )?;
+    let mut rows = stmt.query([&c.id])?;
+    while let Some(r) = rows.next()? {
+        if let Some(definitions) = wanted.get_mut(&r.get(0)?) {
+            definitions.push(Definition {
+                name: r.get(1)?,
+                line: r.get(2)?,
+                imp: r.get(3)?,
+                owner: r.get(4)?,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Store what each version in `recorded`, by row id, defines, in one transaction. `read` holds
+/// the documents as they were parsed. A version is skipped when it is already recorded, or when
+/// its row no longer holds that document and text: it was deleted during the parse, and its id
+/// may have been given to another version.
+pub fn record_definitions(
+    conn: &mut Connection,
+    read: &[Document],
+    recorded: &[(i64, Vec<Definition>)],
+) -> rusqlite::Result<()> {
+    let read: HashMap<i64, &Document> = read.iter().map(|d| (d.version_id, d)).collect();
+    let tx = conn.transaction()?;
+    {
+        let mut claim = tx.prepare(
+            "UPDATE versions SET definitions_recorded = 1
+             WHERE id = ?1 AND definitions_recorded = 0 AND document_id = ?2 AND text = ?3",
+        )?;
+        let mut insert = tx.prepare(
+            "INSERT INTO definitions (version_id, position, name, line, imp, owner)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        for (version_id, definitions) in recorded {
+            let Some(d) = read.get(version_id) else {
+                continue;
+            };
+            if claim.execute(params![version_id, d.id, d.text])? == 0 {
+                continue;
+            }
+            for (position, f) in definitions.iter().enumerate() {
+                insert.execute(params![
+                    version_id,
+                    position as i64,
+                    f.name,
+                    f.line,
+                    f.imp,
+                    f.owner
+                ])?;
+            }
+        }
+    }
+    tx.commit()
 }
 
 /// Keyset page, newest first. `after` is the (created_at, id) of the last row already seen.

@@ -203,8 +203,8 @@ fn page_href(id: &str, page: usize, index: usize) -> String {
 }
 
 /// Page `page`, 1-based, of the review cut into pages of up to `page_lines` lines of whole
-/// documents; `None` when there is no such page. Only that page's documents are highlighted for
-/// display, though code spans resolve against every document.
+/// documents; `None` when there is no such page. Only that page's documents are highlighted;
+/// code spans resolve against `refs`, which covers every document.
 ///
 /// CPU-bound (highlighting a few thousand lines); callers run it off the event loop.
 pub fn render(
@@ -214,6 +214,7 @@ pub fn render(
     highlighter: &Highlighter,
     page_lines: usize,
     page: usize,
+    refs: &Refs,
 ) -> Result<Option<String>, askama::Error> {
     let line_counts: Vec<usize> = c
         .documents
@@ -224,7 +225,6 @@ pub fn render(
     let Some(shown) = page.checked_sub(1).and_then(|i| split.get(i)) else {
         return Ok(None);
     };
-    let refs = Refs::new(c, highlighter);
     let threads_on = |d: &Document| -> Vec<&threads::Thread> {
         all_threads
             .iter()
@@ -293,7 +293,7 @@ pub fn render(
                         threads: on
                             .iter()
                             .filter(|t| t.last_line == n)
-                            .map(|t| ThreadView::new(t, false, &refs))
+                            .map(|t| ThreadView::new(t, false, refs))
                             .collect(),
                     }
                 })
@@ -316,7 +316,7 @@ pub fn render(
         can_publish: c.state != crate::store::State::Closed,
         seq,
         cover_html: if page == 1 {
-            crate::markdown::html(&c.cover_note, &refs)
+            crate::markdown::html(&c.cover_note, refs)
         } else {
             String::new()
         },
